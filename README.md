@@ -48,6 +48,22 @@ applies cleanly and reproducibly.
 Each directory has a `BASE.md` with full provenance, the patch list, and the files
 touched. Read those first.
 
+### License verification
+
+Licenses were verified against **source**, not against a metadata field. Four cores
+listed an empty `license` in the upstream manifest; all four were checked:
+
+| Core | In use? | Verified license | How verified |
+|---|---|---|---|
+| `mupen64plus_next` | **yes** — 12 games | **GPL-2.0** | Read directly: upstream `LICENSE` (18,092 bytes), "GNU GENERAL PUBLIC LICENSE Version 2, June 1991" |
+| `parallel_n64` | **yes** — N64 platform default | **GPL-2.0** | By ancestry: its README is titled `mupen64plus-libretro`; Mupen64Plus-Core's own `LICENSES` states "licensed under the GNU General Public License version 2" with the full text at `doc/gpl-license`. `EmulatorJS/parallel-n64` itself ships **no** license file |
+| `fbalpha2012_cps1` | **no** — 0 games, not a default | *not verifiable* | No license file, no README, no source header. MAME-derived code, but nothing declares a license |
+| `fbalpha2012_cps2` | **no** — 0 games, not a default | *not verifiable* | As above |
+
+The two cores actually in use are both GPL-2.0, verified. The two that cannot be
+verified are unreachable — no game in the collection runs on them — so they fall under
+the blanket statement above rather than requiring a claim we cannot support.
+
 ### Unmodified cores
 
 These ship as-is from EmulatorJS and are **not patched by us**, so their Corresponding
@@ -60,6 +76,15 @@ SuperMuseum's `public/emulatorjs/data/cores/cores.json`.
 
 We also ship `EmulatorJS` itself (the frontend), which **is** patched — see
 `emulatorjs-4.3.0-pre/`.
+
+> **Unmodified cores are redistributed as built and published by EmulatorJS, whose
+> source for each is public at the project linked in that project's own metadata.
+> SuperMuseum patches only the cores marked in the table above.** This blanket
+> statement covers the stock cores we ship but never launch — including several whose
+> upstream repositories declare **no license file at all** (notably the FinalBurn Alpha
+> ports `fbalpha2012_cps1` / `fbalpha2012_cps2`, whose source carries MAME-derived code
+> but no license notice). No game in the collection runs on those; they are retained
+> only as build-system fallbacks, and we make no license claim on their behalf.
 
 ---
 
