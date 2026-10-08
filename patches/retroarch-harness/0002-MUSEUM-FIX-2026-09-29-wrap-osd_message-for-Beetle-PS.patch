@@ -1,5 +1,5 @@
 From 40e96ef231579c528de26d2003e86e1a3ddca89b Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:50:43 -0300
 Subject: [PATCH 2/6] MUSEUM FIX (2026-09-29): wrap osd_message for Beetle PSX
  analog OSD smosh

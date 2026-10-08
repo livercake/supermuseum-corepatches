@@ -1,5 +1,5 @@
 From 8fd905f1fc67a88b1a7da581ab3f485daaa5652f Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:50:37 -0300
 Subject: [PATCH 1/6] MUSEUM FIX (2026-09-13): export ejs_get_memory_map for
  rcheevos descriptors

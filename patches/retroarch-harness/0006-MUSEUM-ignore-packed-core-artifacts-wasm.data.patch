@@ -1,5 +1,5 @@
 From ff03de740b2de10cbba9eaefd4e09beca30a960e Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:57:56 -0300
 Subject: [PATCH 6/6] MUSEUM: ignore packed core artifacts (*-wasm.data)
 

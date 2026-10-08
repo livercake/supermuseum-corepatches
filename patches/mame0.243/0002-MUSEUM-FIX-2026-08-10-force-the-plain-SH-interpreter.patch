@@ -1,5 +1,5 @@
 From 670266fd8fddc98bd17f85b535b866ad42850617 Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:57:20 -0300
 Subject: [PATCH 2/5] MUSEUM FIX (2026-08-10): force the plain SH interpreter
  (disable DRC)

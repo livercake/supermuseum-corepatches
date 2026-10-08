@@ -1,5 +1,5 @@
 From 10ee8eaaffcd522e29b75d61fbc2305391b2b3f9 Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:57:29 -0300
 Subject: [PATCH 4/5] MUSEUM FIX (2026-08-10): in-memory loopback for m2comm
  (Model 2 networking)

@@ -1,5 +1,5 @@
 From 5a66579a3d307dddb2f8d917392cdaa8af9a0127 Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:57:20 -0300
 Subject: [PATCH 1/5] MUSEUM FIX (2026-08-10): guard
  emscripten_set_running_machine to non-libretro builds

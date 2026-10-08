@@ -1,5 +1,5 @@
 From 281fe572e1a8366cd127d9046477deae0b1f64e6 Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:56:58 -0300
 Subject: [PATCH 2/3] MUSEUM FIX (2026-08-22 + 2026-08-23): cartdata
  persistence + multicart userData

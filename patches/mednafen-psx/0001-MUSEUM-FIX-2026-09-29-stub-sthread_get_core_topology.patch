@@ -1,5 +1,5 @@
 From 14b76000e75eb803277673a56b237b931e02bc56 Mon Sep 17 00:00:00 2001
-From: Felipe Parada <fparada@meatcode.cl>
+From: Felipe Parada <livercake@gmail.com>
 Date: Wed, 7 Oct 2026 21:56:18 -0300
 Subject: [PATCH] MUSEUM FIX (2026-09-29): stub sthread_get_core_topology for
  the EJS harness
