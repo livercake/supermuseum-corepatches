@@ -1,0 +1,48 @@
+From 670266fd8fddc98bd17f85b535b866ad42850617 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:57:20 -0300
+Subject: [PATCH 2/5] MUSEUM FIX (2026-08-10): force the plain SH interpreter
+ (disable DRC)
+
+After the SET_SYSTEM_AV_INFO reinit fix, ST-V games ran but were SLOWER
+than mame2015's -nodrc interpreter. The SH-2 (the ST-V CPU) was running
+through the DRC path.
+
+With -drc at its default 1 and no native backend compiled, the only DRC
+backend is drcbe_c -- the interpreted-C backend that interprets MAME's UML
+IR with a big switch, which has more dispatch overhead per guest
+instruction than the hand-tuned plain interpreter. mame2015 proves the
+plain interpreter is the fast, correct path.
+
+Surgical: Model 2's i960/68000 are unaffected and Daytona still runs
+full-speed.
+
+MUST be re-applied on any future mame0.243 rebuild.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/devices/cpu/sh/sh2.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/devices/cpu/sh/sh2.cpp b/src/devices/cpu/sh/sh2.cpp
+index 302b108228..25d1d77b0d 100644
+--- a/src/devices/cpu/sh/sh2.cpp
++++ b/src/devices/cpu/sh/sh2.cpp
+@@ -262,7 +262,13 @@ sh2_device::sh2_device(const machine_config &mconfig, device_type type, const ch
+ {
+ 	m_cpu_type = cpu_type;
+ 	m_am = SH12_AM;
+-	m_isdrc = allow_drc();
++	/* MUSEUM FIX (2026-08-10): force the plain interpreter for SH-1/SH-2/SH-4.
++	   The DRC path falls back to the interpreted-C backend (drcbe_c) in the
++	   Emscripten build, which interprets the UML IR and is SLOWER than this
++	   core's own interpreter — ST-V games ran slower than mame2015's -nodrc
++	   interpreter. Keep DRC off; mame2015 proves the interpreter is the fast,
++	   correct path. */
++	m_isdrc = false;
+ }
+ 
+ sh2a_device::sh2a_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock)
+-- 
+2.43.0
+

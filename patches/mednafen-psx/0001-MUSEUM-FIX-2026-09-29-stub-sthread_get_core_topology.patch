@@ -1,0 +1,50 @@
+From 14b76000e75eb803277673a56b237b931e02bc56 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:56:18 -0300
+Subject: [PATCH] MUSEUM FIX (2026-09-29): stub sthread_get_core_topology for
+ the EJS harness
+
+The EJS harness links its own older rthreads (slock/scond/sthread) which
+predates sthread_get_core_topology() -- the Sep-2026 libretro-common
+topology API that beetle-psx's HD-texture prefetch pool (rhi_tt.c
+io_thread_count()) calls at startup. Without the symbol the core aborts:
+
+  Aborted(missing function: sthread_get_core_topology)
+
+Returning false selects the historical 4-worker default -- the same path
+consoles take -- so behavior is unchanged, only the pool sizing.
+
+Deliberately a stub, not the core's full rthreads.c: compiling the real
+implementation would collide with the harness copies of slock/s sthread on
+link. See ~/core-builds/RetroArch commit 40e96ef for the sibling osd_message
+wrapper applied to the same core.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ museum_sthread_topology_stub.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+ create mode 100644 museum_sthread_topology_stub.c
+
+diff --git a/museum_sthread_topology_stub.c b/museum_sthread_topology_stub.c
+new file mode 100644
+index 00000000..46da9d80
+--- /dev/null
++++ b/museum_sthread_topology_stub.c
+@@ -0,0 +1,14 @@
++/* MUSEUM FIX (2026-09-29): the EJS harness links its own older rthreads
++ * (slock/scond/sthread) which predates sthread_get_core_topology() — the
++ * Sep-2026 libretro-common topology API beetle-psx's HD-texture prefetch
++ * pool (rhi_tt.c io_thread_count()) calls at startup. Without this symbol
++ * the core aborts with "missing function: sthread_get_core_topology".
++ * Returning false selects the historical 4-worker default — the same path
++ * consoles take — so behavior is unchanged, only the pool sizing. */
++#include <stdbool.h>
++bool sthread_get_core_topology(unsigned *fast, unsigned *slow)
++{
++   (void)fast;
++   (void)slow;
++   return false;
++}
+-- 
+2.43.0
+

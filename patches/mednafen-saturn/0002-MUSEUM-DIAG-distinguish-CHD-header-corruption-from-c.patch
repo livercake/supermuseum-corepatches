@@ -1,0 +1,55 @@
+From 04e969cc43780cd27285297b247ad1e1d30c9b38 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:56:10 -0300
+Subject: [PATCH 2/2] MUSEUM DIAG: distinguish CHD header corruption from codec
+ mismatch
+
+The header object is freed on failure, so re-read the raw bytes to tell
+delivery corruption (bad magic/version/tags) apart from a codec-table
+mismatch (sane tags, no match).
+
+This is the diagnostic logging referenced in AGENTS.md under the Beetle
+Saturn build recipe. It only fires on CHD load failure and is harmless in
+production -- retained because the 2026-09-06 err=27 investigation was
+driven entirely by these lines.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ mednafen/cdrom/CDAccess_CHD.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/mednafen/cdrom/CDAccess_CHD.c b/mednafen/cdrom/CDAccess_CHD.c
+index 7dbfe42..9fc34cf 100644
+--- a/mednafen/cdrom/CDAccess_CHD.c
++++ b/mednafen/cdrom/CDAccess_CHD.c
+@@ -292,7 +292,26 @@ static bool CDAccess_CHD_Load_internal(CDAccess_CHD *self, const char *path, boo
+   err = chd_open_core_file(cf, CHD_OPEN_READ, NULL, &self->chd);
+   if (err != CHDERR_NONE)
+   {
+-    log_cb(RETRO_LOG_ERROR, "Failed to load CHD image: %s", path);
++    /* MUSEUM DIAG: the header object is freed on failure, so re-read the raw
++       bytes to distinguish delivery corruption (bad magic/version/tags) from
++       a codec-table mismatch (sane tags, no match) */
++    RFILE *dfp = filestream_open(path, RETRO_VFS_FILE_ACCESS_READ, 0);
++    if (dfp)
++    {
++      uint8_t dh[120];
++      int64_t dn = filestream_read(dfp, dh, sizeof(dh));
++      uint32_t dv = (dn >= 16) ? ((uint32_t)dh[12] << 24 | (uint32_t)dh[13] << 16 | (uint32_t)dh[14] << 8 | dh[15]) : 0xFFFFFFFF;
++      log_cb(RETRO_LOG_ERROR, "MUSEUM DIAG dump n=%d magic=%.8s ver=%u len=%u c=[%.4s,%.4s,%.4s,%.4s]",
++        (int)dn, (dn >= 8) ? (const char*)dh : "?",
++        dv,
++        (dn >= 12) ? ((uint32_t)dh[8] << 24 | (uint32_t)dh[9] << 16 | (uint32_t)dh[10] << 8 | dh[11]) : 0,
++        (dn >= 20) ? (const char*)&dh[16] : "?", (dn >= 24) ? (const char*)&dh[20] : "?",
++        (dn >= 28) ? (const char*)&dh[24] : "?", (dn >= 32) ? (const char*)&dh[28] : "?");
++      filestream_close(dfp);
++    }
++    else
++      log_cb(RETRO_LOG_ERROR, "MUSEUM DIAG dump: reopen failed");
++    log_cb(RETRO_LOG_ERROR, "Failed to load CHD image: %s (MUSEUM DIAG err=%d)", path, (int)err);
+     return false;
+   }
+ 
+-- 
+2.43.0
+

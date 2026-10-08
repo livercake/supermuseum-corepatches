@@ -1,0 +1,289 @@
+From 0d611f6ec1a0a1784337e96035486a34453794b7 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:56:47 -0300
+Subject: [PATCH 1/3] MUSEUM FIX (2026-08-22): pmem() + Lua longjmp for the
+ emscripten build
+
+1. pmem(addr[, val]) -- the legacy pre-0.2 PICO-8 persistent-memory API was
+   entirely missing from fake-08. Carts like Celeste Classic hit an
+   undefined-global error at their first save point and never persisted.
+   Implemented as an alias onto the same 64xfix32 region at 0x5e00 that
+   dget/dset use, so it rides the SAVE_RAM .srm pipeline automatically.
+   (picoluaapi.cpp/h + registration in vm.cpp via p8GlobalLuaFunctions.h)
+
+2. Lua coroutine unwinding must use setjmp/longjmp, not C++ exceptions.
+   Every PICO-8 cart runs inside a Lua coroutine; each frame's
+   coroutine.yield() unwinds by throwing lua_longjmp back to lua_resume.
+   Under Emscripten the C++-exceptions path escapes uncaught even with
+   -s DISABLE_EXCEPTION_CATCHING=0 (unlike MAME, where full-EH works) and
+   kills the main loop with "Uncaught lua_longjmp*". Longjmp mode is what
+   Lua uses on every exception-less embedded platform.
+   -DLUA_USE_LONGJMP (platform/libretro/Makefile)
+   SUPPORT_LONGJMP=1 (RetroArch Makefile.emulatorjs, fake08-scoped)
+
+3. Boot-window diagnostics in libretro.cpp: [fake08-diag] frame=N cart=...
+   err=... heap=... for the first ~100s of frames via log_cb, surfacing
+   silent shell fall-backs and heap growth during onboarding. Deliberately
+   stops after boot. Vm::GetCartLoadError() also reads the Lua global
+   __z8_last_error that __z8_tick sets when a cart coroutine dies.
+
+Re-apply all of the above on any core rebuild.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ platform/libretro/Makefile     | 11 ++++-
+ platform/libretro/libretro.cpp | 83 ++++++++++++++++++++++++++++++++--
+ source/p8GlobalLuaFunctions.h  |  3 ++
+ source/picoluaapi.cpp          | 24 ++++++++++
+ source/picoluaapi.h            |  1 +
+ 5 files changed, 117 insertions(+), 5 deletions(-)
+
+diff --git a/platform/libretro/Makefile b/platform/libretro/Makefile
+index 1033395..cd340f9 100644
+--- a/platform/libretro/Makefile
++++ b/platform/libretro/Makefile
+@@ -107,7 +107,16 @@ else ifneq (,$(findstring qnx,$(platform)))
+ else ifeq ($(platform), emscripten)
+    TARGET := $(TARGET_NAME)_libretro_emscripten.bc
+    fpic := -fPIC
+-   SHARED := -shared -Wl,--version-script=link.T -Wl,--no-undefined
++   CFLAGS += -DPERSIST_CARTDATA_VIA_SRAM
++   CXXFLAGS += -DPERSIST_CARTDATA_VIA_SRAM
++   # MUSEUM FIX (2026-08-22): use setjmp/longjmp for Lua error/coroutine
++   # unwinding instead of C++ exceptions. Coroutine yields (every PICO-8 cart)
++   # throw lua_longjmp from lua_yieldk back to lua_resume; under Emscripten the
++   # C++-exceptions path escapes to JS uncaught even with full EH linking.
++   # Longjmp needs -s SUPPORT_LONGJMP=1 at link (Makefile.emulatorjs).
++   CFLAGS += -DLUA_USE_LONGJMP
++   CXXFLAGS += -DLUA_USE_LONGJMP
++   SHARED := -shared -Wl,--version-script=link.T
+ else ifeq ($(platform), vita)
+    TARGET := $(TARGET_NAME)_vita.a
+    CC = arm-vita-eabi-gcc
+diff --git a/platform/libretro/libretro.cpp b/platform/libretro/libretro.cpp
+index 589d4f2..539de05 100644
+--- a/platform/libretro/libretro.cpp
++++ b/platform/libretro/libretro.cpp
+@@ -1,6 +1,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <array>
++#include <vector>
+ 
+ #include "libretro.h"
+ #include "libretro_core_options.h"
+@@ -44,6 +45,14 @@ static int crop_h_left = 0;
+ static int crop_h_right = 0;
+ static int crop_v_top = 0;
+ static int crop_v_bottom = 0;
++static int diagFrame = 0; // MUSEUM FIX: periodic boot diagnostics counter
++
++// MUSEUM FIX (2026-08-22): persistent copy of the content passed to
++// retro_load_game. The queued cart change is processed on the NEXT frame in
++// Vm::Step(), but RetroArch's retro_game_info.data buffer is only guaranteed
++// valid during the load call - queueing the raw pointer parsed garbage and
++// every cart failed with "unknown cart file format".
++static std::vector<unsigned char> _contentBytes;
+ 
+ const size_t screenBufferSize = PicoScreenWidth*PicoScreenHeight;
+ uint16_t screenBuffer[screenBufferSize];
+@@ -405,6 +414,32 @@ EXPORT void retro_run()
+     kHeld = currKHeld;
+     kDown = currKDown;
+ 
++    // MUSEUM FIX (2026-08-22): boot-window diagnostics - current cart plus
++    // any captured load/run error for the first ~100 seconds, so silent
++    // fall-backs to the shell are visible during onboarding. Also reports
++    // wasm heap usage: a runaway per-frame allocation shows up as monotonic
++    // growth (renderer OOM kills the tab before any other symptom).
++    // Deliberately stops after boot so production console logs stay quiet.
++    diagFrame++;
++    if (diagFrame <= 6000 && diagFrame % 120 == 1) {
++        std::string err = _vm->GetCartLoadError();
++        if (!err.empty()) err = " err='" + err + "'";
++        if (!_vm->_lastErisError.empty()) err += " eris='" + _vm->_lastErisError + "'";
++        extern unsigned char* sbrk(int);
++        unsigned char* heapPtr = sbrk(0);
++        // MUSEUM FIX: also dump the first 8 bytes of the SRAM window so we can
++        // see whether dset writes actually mutate the persistent region.
++        char win[24] = {0};
++        for (int i = 0; i < 8; i++) {
++            snprintf(win + i * 2, 3, "%02x", _memory->data[0x5e00 + i]);
++        }
++        log_cb(RETRO_LOG_INFO, "[fake08-diag] frame=%d cart='%s'%s dsets=%d pmems=%d last=%d:%.2f win=%s heap=%u\n",
++            diagFrame, _vm->CurrentCartFilename().c_str(), err.c_str(),
++            _vm->diag_dset_count, _vm->diag_pmem_count,
++            _vm->diag_lastDsetAddr, _vm->diag_lastDsetVal,
++            win, (unsigned)(size_t)heapPtr);
++    }
++
+     if (frame % 2 == 0) {
+         _audio->FillAudioBuffer(&audioBuffer, 0, SAMPLESPERFRAME);
+         audio_batch_cb(audioBuffer, SAMPLESPERFRAME);
+@@ -573,6 +608,10 @@ EXPORT bool retro_serialize(void *data, size_t size)
+     memcpy(((char*)data + offset), luaStateBuffer, luaStateSize);
+     offset += luaStateSize;
+ 
++    if (log_cb) {
++        log_cb(RETRO_LOG_INFO, "[fake08-diag] serialize: luaStateSize=%zu total=%zu\n", luaStateSize, offset + sizeof(PicoRam));
++    }
++
+     if (log_cb) {
+         log_cb(RETRO_LOG_INFO, "copying pico 8 memory to buffer\n");
+     }
+@@ -658,6 +697,11 @@ bool deserialize_legacy(const void *data, size_t size) {
+ EXPORT bool retro_unserialize(const void *data, size_t size)
+ {
+     if (log_cb) {
++        char head[24] = {0};
++        for (size_t i = 0; i < 8 && i < size; i++) {
++            snprintf(head + i * 2, 3, "%02x", ((const unsigned char*)data)[i]);
++        }
++        log_cb(RETRO_LOG_INFO, "[fake08-diag] unserialize: begin size=%zu head=%s\n", size, head);
+         log_cb(RETRO_LOG_INFO, "lua deserialize\n");
+     }
+ 
+@@ -731,7 +775,10 @@ EXPORT bool retro_unserialize(const void *data, size_t size)
+ 
+     memcpy(&_audio->getAudioState()->_musicChannel, ((char*)data + offset), musicChannelSize);
+     offset += musicChannelSize;
+-    
++
++    if (log_cb) {
++        log_cb(RETRO_LOG_INFO, "[fake08-diag] unserialize: OK size=%zu\n", size);
++    }
+     return true;
+ }
+ 
+@@ -748,19 +795,33 @@ EXPORT bool retro_load_game(struct retro_game_info const *info)
+     check_variables(true);
+ 
+     if (!info) {
++        log_cb(RETRO_LOG_INFO, "[fake08-diag] load_game: no content, queueing BIOS\n");
+         _vm->QueueCartChange("__FAKE08-BIOS.p8");
+         return true;
+     }
+ 
++    log_cb(RETRO_LOG_INFO, "[fake08-diag] load_game: path='%s' size=%zu data=%s\n",
++        info->path ? info->path : "(null)", (size_t)info->size, info->data ? "yes" : "no");
++
+     auto containingDir = getDirectory(info->path);
+ 
+     if (containingDir.length() > 0) {
+         setCartDirectory(containingDir);
+     }
+ 
+-    if (info->size > 0) {
++    if (info->size > 0 && info->data) {
++        // Copy into our own buffer so the pointer survives until Step()
++        // processes the queued change next frame.
+         const unsigned char* data = reinterpret_cast<const unsigned char*>(info->data);
+-        _vm->QueueCartChange(data, info->size);
++        _contentBytes.assign(data, data + info->size);
++        char head[32];
++        for (int i = 0; i < 8 && i < (int)info->size; i++) {
++            snprintf(head + i * 2, 3, "%02x", _contentBytes[i]);
++        }
++        head[16] = '\0';
++        log_cb(RETRO_LOG_INFO, "[fake08-diag] content head: %s\n", head);
++
++        _vm->QueueCartChange(_contentBytes.data(), _contentBytes.size());
+     }
+     else {
+         _vm->QueueCartChange(info->path);
+@@ -787,11 +848,25 @@ EXPORT unsigned retro_get_region()
+ 
+ EXPORT void *retro_get_memory_data(unsigned id)
+ {
+-    //move cart data saving to here?
++    // MUSEUM FIX (2026-08-22): expose the persistent cart-data region
++    // (0x5e00-0x5eff, dget/dset storage) as RETRO_MEMORY_SAVE_RAM so the
++    // frontend saves/restores it as .srm. Points INTO PicoRam, so dset
++    // writes land directly in the SRAM buffer - no sync pass needed.
++    if (id == RETRO_MEMORY_SAVE_RAM && _memory != nullptr) {
++        static bool logged = false;
++        if (!logged && log_cb) {
++            logged = true;
++            log_cb(RETRO_LOG_INFO, "[fake08-diag] SAVE_RAM window handed to frontend (256 bytes @ PicoRam+0x5e00)\n");
++        }
++        return &_memory->data[0x5e00];
++    }
+     return nullptr;
+ }
+ 
+ EXPORT size_t retro_get_memory_size(unsigned id)
+ {
++    if (id == RETRO_MEMORY_SAVE_RAM && _memory != nullptr) {
++        return 0x100;
++    }
+     return 0;
+ }
+diff --git a/source/p8GlobalLuaFunctions.h b/source/p8GlobalLuaFunctions.h
+index 3158b96..e0cccc2 100644
+--- a/source/p8GlobalLuaFunctions.h
++++ b/source/p8GlobalLuaFunctions.h
+@@ -624,6 +624,9 @@ function __z8_tick()
+         __z8_stopped = false -- FIXME: what now?
+     elseif not ret then
+         printh(tostr(err))
++        -- MUSEUM FIX (2026-08-22): stash the error so the frontend can
++        -- surface it (Vm::GetCartLoadError reads this global).
++        __z8_last_error = tostring(err)
+         -- Return to menu on error
+         __loaddefaultcart()
+         return -1
+diff --git a/source/picoluaapi.cpp b/source/picoluaapi.cpp
+index 721abb7..0365b73 100644
+--- a/source/picoluaapi.cpp
++++ b/source/picoluaapi.cpp
+@@ -1261,11 +1261,35 @@ int dset(lua_State *L) {
+     int dest = lua_tonumber(L,1);
+     fix32 val = lua_tonumber(L,2);
+ 
++    _vmForLuaApi->diag_dset_count++;
++    _vmForLuaApi->diag_lastDsetAddr = dest;
++    _vmForLuaApi->diag_lastDsetVal = (double)val;
+     _vmForLuaApi->vm_dset(dest, val);
+ 
+     return 0;
+ }
+ 
++// MUSEUM FIX (2026-08-22): pmem(addr[, val]) - legacy PICO-8 persistent memory
++// API used by pre-0.2 carts (Celeste Classic etc). Same 64xfix32 layout as
++// dget/dset at 0x5e00, which the SAVE_RAM patch persists as .srm. Previously
++// unimplemented: any cart touching pmem died with an undefined-global error
++// at its first save point.
++int pmem(lua_State *L) {
++    int addr = lua_tonumber(L, 1);
++
++    if (lua_gettop(L) > 1) {
++        fix32 val = lua_tonumber(L, 2);
++        _vmForLuaApi->diag_pmem_count++;
++        _vmForLuaApi->vm_dset(addr, val);
++        return 0;
++    }
++
++    fix32 val = _vmForLuaApi->vm_dget(addr);
++    lua_pushnumber(L, val);
++
++    return 1;
++}
++
+ int printh(lua_State *L) {
+     if (lua_isstring(L, 1)){
+         const char * str = "";
+diff --git a/source/picoluaapi.h b/source/picoluaapi.h
+index d012fe9..e96e1e9 100644
+--- a/source/picoluaapi.h
++++ b/source/picoluaapi.h
+@@ -89,6 +89,7 @@ int reload(lua_State *L);
+ int cartdata(lua_State *L);
+ int dget(lua_State *L);
+ int dset(lua_State *L);
++int pmem(lua_State *L);
+ 
+ //
+ int printh(lua_State *L);
+-- 
+2.43.0
+

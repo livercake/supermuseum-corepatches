@@ -1,0 +1,31 @@
+From ff03de740b2de10cbba9eaefd4e09beca30a960e Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:57:56 -0300
+Subject: [PATCH 6/6] MUSEUM: ignore packed core artifacts (*-wasm.data)
+
+Packed core .data files are build output, not source. They run to
+hundreds of MB each and would swamp the patch history that
+arties/GPL-Source-Preservation-Plan.md depends on for Corresponding
+Source provenance.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .gitignore | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/.gitignore b/.gitignore
+index bcfc6409bb..07e4e5ab27 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -283,3 +283,8 @@ gfx/drivers/rsx_shaders/modern_opaque.fpo
+ gfx/drivers/rsx_shaders/modern_opaque.vpo
+ pkg/psl1ght/pkg/USRDIR/shaders_cg/
+ !pkg/psl1ght/pkg/USRDIR/system/
++
++# MUSEUM (2026-10-07): packed core artifacts are build output, never source.
++# See arties/GPL-Source-Preservation-Plan.md -- these must never be committed,
++# they are hundreds of MB and would swamp the patch history.
++*-wasm.data
+-- 
+2.43.0
+

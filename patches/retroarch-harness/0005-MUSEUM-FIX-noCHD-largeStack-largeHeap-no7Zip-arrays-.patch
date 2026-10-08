@@ -1,0 +1,54 @@
+From 9dc606ff3cc3f0cf27ada050cb8308a02d656ce6 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:51:06 -0300
+Subject: [PATCH 5/6] MUSEUM FIX: noCHD / largeStack / largeHeap / no7Zip
+ arrays for self-built cores
+
+The build script iterates every *_emscripten.bc present and packs each
+core, so per-core build quirks are declared in these four arrays.
+
+noCHD (added: yabause, mednafen_saturn, mednafen_pce, mednafen_psx)
+  HAVE_CHD=1 pulls RetroArch's own libchdr + chd_stream into the harness
+  link. Those object files beat archive members at link time, so the
+  harness's older libchdr overrides the core's and every CD platform boots
+  to a BIOS dashboard ("no CD in tray") or fails CHD parse with err=27.
+  HAVE_CHD=0 excludes them. This exact collision took Saturn down for
+  ~1h on 2026-09-07 (yabause) and again on 2026-09-09 (Beetle Saturn).
+
+largeStack / largeHeap (added: mame2015, mame0.243, mametiny)
+  MAME needs a large WASM stack and heap to link at all.
+
+no7Zip (added: mame2015, mame0.243, mametiny, fake08)
+  These cores must be packed with plain zip, not 7z.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ emulatorjs/build-emulatorjs.sh | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/emulatorjs/build-emulatorjs.sh b/emulatorjs/build-emulatorjs.sh
+index a2e7bfd3c7..bae2826f10 100755
+--- a/emulatorjs/build-emulatorjs.sh
++++ b/emulatorjs/build-emulatorjs.sh
+@@ -61,14 +61,14 @@ fi
+ 
+ lastGles=0
+ 
+-largeStack=("mupen64plus_next" "azahar")
++largeStack=("mupen64plus_next" "azahar" "mame2015" "mame0.243" "mametiny")
+ useOpenAL=()
+-largeHeap=("mupen64plus_next" "picodrive" "pcsx_rearmed" "genesis_plus_gx" "genesis_plus_gx_wide" "mednafen_psx" "mednafen_psx_hw" "parallel_n64" "ppsspp" "azahar")
++largeHeap=("mupen64plus_next" "picodrive" "pcsx_rearmed" "genesis_plus_gx" "genesis_plus_gx_wide" "mednafen_psx" "mednafen_psx_hw" "parallel_n64" "ppsspp" "azahar" "mame2015" "mame0.243" "mametiny")
+ needsGles3=("ppsspp" "azahar")
+ needsThreads=("ppsspp" "azahar")
+ largeThreads=("ppsspp" "azahar")
+-noCHD=("mame2003" "mame2003_plus" "pcsx_rearmed" "genesis_plus_gx" "genesis_plus_gx_wide" "azahar")
+-no7Zip=("bsnes")
++noCHD=("mame2003" "mame2003_plus" "pcsx_rearmed" "genesis_plus_gx" "genesis_plus_gx_wide" "azahar" "yabause" "mednafen_saturn" "mednafen_pce" "mednafen_psx")
++no7Zip=("bsnes" "mame2015" "mame0.243" "mametiny" "fake08")
+ needsAsync=("mupen64plus_next" "dosbox_pure" "ppsspp" "azahar" "bsnes")
+ 
+ for f in $(ls -v *_emscripten.bc); do
+-- 
+2.43.0
+

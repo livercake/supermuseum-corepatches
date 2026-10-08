@@ -1,0 +1,44 @@
+From 5a66579a3d307dddb2f8d917392cdaa8af9a0127 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:57:20 -0300
+Subject: [PATCH 1/5] MUSEUM FIX (2026-08-10): guard
+ emscripten_set_running_machine to non-libretro builds
+
+running_machine::start() calls emscripten_set_running_machine(this) under
+#if defined(__EMSCRIPTEN__) (line ~317), but the definition is guarded by
+#if defined(EMSCRIPTEN) && !defined(__LIBRETRO__) (line ~1298).
+
+In the libretro build the call compiled but the definition did not, so the
+link failed with:
+
+  Aborted(missing function:
+  _ZN15running_machine30emscripten_set_running_machineEPS_)
+
+Fixed by adding && !defined(__LIBRETRO__) to the call-site guard so the
+call is excluded in libretro builds. The libretro core uses its own
+retro_main_loop, not the Emscripten loop.
+
+MUST be re-applied on any future mame0.243 rebuild -- this is a source
+edit, not a build flag.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/emu/machine.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/emu/machine.cpp b/src/emu/machine.cpp
+index 77ef8afc2e..c1296b0cbe 100644
+--- a/src/emu/machine.cpp
++++ b/src/emu/machine.cpp
+@@ -314,7 +314,7 @@ int running_machine::run(bool quiet)
+ 
+ 		export_http_api();
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) && !defined(__LIBRETRO__)
+ 		// break out to our async javascript loop and halt
+ 		emscripten_set_running_machine(this);
+ #endif
+-- 
+2.43.0
+

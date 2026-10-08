@@ -1,0 +1,87 @@
+From 40e96ef231579c528de26d2003e86e1a3ddca89b Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:50:43 -0300
+Subject: [PATCH 2/6] MUSEUM FIX (2026-09-29): wrap osd_message for Beetle PSX
+ analog OSD smosh
+
+Beetle PSX (mednafen_psx) reports its DualShock analog toggle via
+osd_message() -> RETRO_ENVIRONMENT_SET_MESSAGE_EXT, which RetroArch bakes
+into the canvas frame as gfx-widget text. That is unreachable from EJS's
+DOM displayMessage and unskinnable from CSS, so visitors get a canvas-
+burned "DualShock on port N: Analog|Digital Mode" toast they cannot read.
+
+The core option beetle_psx_display_osd is all-or-nothing (it would also
+kill real error OSD), so museum_osd_wrap.c wraps the symbol at link time
+(-Wl,--wrap=osd_message, scoped to mednafen_psx* targets). Analog/Digital
+mode messages are forwarded to the parent window as coreMessage posts
+(EmulatorOverlay renders them via showToast) and suppressed canvas-side;
+everything else falls through to the real implementation via a "%s"
+forward, so error/FPS OSD is byte-identical.
+
+Remap-proof: the core stays the source of truth, no JS combo tracking.
+Relink-only on refresh (no core recompile); verify coreMessage appears
+exactly once in each variant's glue JS after relinking.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ museum_osd_wrap.c | 48 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 48 insertions(+)
+ create mode 100644 museum_osd_wrap.c
+
+diff --git a/museum_osd_wrap.c b/museum_osd_wrap.c
+new file mode 100644
+index 0000000000..6b472801b6
+--- /dev/null
++++ b/museum_osd_wrap.c
+@@ -0,0 +1,48 @@
++/* MUSEUM FIX (analog OSD smosh): pillow-smosh Beetle's canvas-drawn OSD
++ * toasts into the parent's .iframe-toast pill.
++ *
++ * Beetle reports its DualShock analog toggle ("DualShock on port N:
++ * Analog|Digital Mode") via osd_message() -> RETRO_ENVIRONMENT_SET_MESSAGE_EXT,
++ * which RetroArch renders as gfx-widget text baked into the canvas frame --
++ * unreachable from EJS's DOM displayMessage and unskinnable from CSS. The
++ * core option beetle_psx_display_osd is all-or-nothing (it would also kill
++ * real error OSD), so instead this file wraps the symbol at link time
++ * (-Wl,--wrap=osd_message, scoped to mednafen_psx* targets below): analog
++ * mode messages are forwarded to the parent window as coreMessage posts
++ * (EmulatorOverlay renders them through showToast) and suppressed
++ * canvas-side; every other message falls through to the real implementation
++ * via a "%s" forward, so error/FPS OSD is byte-identical.
++ *
++ * Match rule: contains "Analog"|"Digital" AND capital-M "Mode". The
++ * capital M excludes neGcon's "mode is ON/OFF" (lowercase, kept on canvas;
++ * no beetle-PSX gun games exist in the library anyway).
++ *
++ * Called on the main thread (retro_run input poll), so EM_ASM is safe.
++ * `parent` here is the iframe's parent -- the museum page -- whose message
++ * handler already validates e.source and renders coreMessage via showToast.
++ */
++#include <emscripten.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++
++void __real_osd_message(unsigned priority, int level, int target, int type,
++                        const char *format, ...);
++
++void __wrap_osd_message(unsigned priority, int level, int target, int type,
++                        const char *format, ...)
++{
++   char buf[4096];
++   va_list ap;
++
++   va_start(ap, format);
++   vsnprintf(buf, sizeof(buf), format, ap);
++   va_end(ap);
++
++   if ((strstr(buf, "Analog") || strstr(buf, "Digital")) &&
++       strstr(buf, "Mode")) {
++      EM_ASM({ parent.postMessage({ type: 'coreMessage', text: UTF8ToString($0) }, '*'); }, buf);
++      return;
++   }
++   __real_osd_message(priority, level, target, type, "%s", buf);
++}
+-- 
+2.43.0
+

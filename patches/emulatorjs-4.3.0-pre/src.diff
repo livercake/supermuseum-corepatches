@@ -1,0 +1,647 @@
+--- a/src/emulator.js
++++ b/src/emulator.js
+@@ -1,3 +1,20 @@
++/*
++ * SuperMuseum vendored EmulatorJS frontend — base: 4.3.0-pre (GPL-3.0)
++ *
++ * Upstream: https://github.com/EmulatorJS/EmulatorJS
++ * Baseline: https://cdn.emulatorjs.org/4.3.0-pre/data/src/emulator.js
++ * Baseline SHA-256: 182aa14dd0f874b308220fbaa8aad66eff4a83fe4dae4163543adebfa21f9ed9
++ * This file's SHA-256:  465f6c375b7415fc0c5d80be5efd6bac5dc8fbae376ed4a97e9838f67439b82c
++ *
++ * Modified by SuperMuseum (Patches A-I, documented in AGENTS.md under
++ * "EmulatorJS Vendored Patches"). The complete diff against the baseline is
++ * committed at arties/licenses/patches/emulatorjs-4.3.0-pre/src.diff and is
++ * verified byte-for-byte by ./verify.sh in that directory.
++ *
++ * MUSEUM (2026-10-07): before re-applying patches after an upstream update,
++ * run that verify.sh — it fails loudly if this tree has drifted from src.diff
++ * instead of silently losing a patch. See arties/GPL-Source-Preservation-Plan.md.
++ */
+ import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js";
+ import { EJS_COMPRESSION } from "./compression.js";
+ import { EJS_GameManager } from "./GameManager.js";
+@@ -101,83 +118,76 @@
+                 fullPath = this.config.filePaths[path.split("/").pop()];
+             }
+ 
+-            // Delegate all URL downloads (http, https, blob, data, etc.) to EJS_Download
+-            try {
+-                const onProgress = progress instanceof Function ? (status, percentage, loaded, total) => {
+-                    if (status === "downloading") {
+-                        const progressText = total ? " " + Math.floor(percentage).toString() + "%" : " " + (loaded / 1048576).toFixed(2) + "MB";
+-                        progress(progressText);
+-                    }
+-                } : null;
+-
+-                const onComplete = (success, result) => {
+-                    if (!success) {
+-                        console.error("Download failed in onComplete:", result);
+-                    }
+-                };
+-
+-                const responseType = opts.responseType || "arraybuffer";
+-                const method = opts.method || "GET";
+-                const headers = {};
+-                const timeout = 30000;
+-
+-                const cacheItem = await this.downloader.downloadFile(
+-                    fullPath,
+-                    type,
+-                    method,
+-                    headers,
+-                    null,
+-                    onProgress,
+-                    onComplete,
+-                    timeout,
+-                    responseType,
+-                    forceExtract,
+-                    dontCache,
+-                    dontExtract
+-                );
++            const attempt = async (targetUrl) => {
++                try {
++                    const onProgress = progress instanceof Function ? (status, percentage, loaded, total) => {
++                        if (status === "downloading") {
++                            const progressText = total ? " " + Math.floor(percentage).toString() + "%" : " " + (loaded / 1048576).toFixed(2) + "MB";
++                            progress(progressText);
++                        }
++                    } : null;
+ 
+-                // Handle HEAD requests (returns null)
+-                if (!cacheItem) {
+-                    resolve({ headers: {} });
+-                    return;
+-                }
++                    const onComplete = (success, result) => {
++                        if (!success) {
++                            console.error("Download failed in onComplete:", result);
++                        }
++                    };
++
++                    const responseType = opts.responseType || "arraybuffer";
++                    const method = opts.method || "GET";
++                    const headers = {};
++                    const timeout = 30000;
++
++                    const cacheItem = await this.downloader.downloadFile(
++                        targetUrl,
++                        type,
++                        method,
++                        headers,
++                        null,
++                        onProgress,
++                        onComplete,
++                        timeout,
++                        responseType,
++                        forceExtract,
++                        dontCache,
++                        dontExtract
++                    );
+ 
+-                // Extract the data from the cache item
+-                if (cacheItem.files && cacheItem.files.length > 0) {
+-                    // If there are files, return the entire cache item
+-                    // so the caller can access all extracted files
+-                    if (cacheItem.files.length > 0) {
+-                        resolve({
++                    if (!cacheItem) {
++                        return { headers: {} };
++                    }
++
++                    if (cacheItem.files && cacheItem.files.length > 0) {
++                        return {
+                             data: cacheItem,
+                             headers: {
+                                 "content-length": cacheItem.files.reduce((sum, f) => sum + (f.bytes.byteLength || 0), 0)
+                             }
+-                        });
+-                    } else {
+-                        let data = cacheItem.files[0].bytes;
+-                        
+-                        // Convert to appropriate format based on responseType
+-                        if (responseType === "text" || (opts.type && opts.type.toLowerCase() === "text")) {
+-                            const decoder = new TextDecoder();
+-                            data = decoder.decode(data);
+-                            try { data = JSON.parse(data) } catch(e) {}
+-                        }
+-
+-                        resolve({
+-                            data: data,
+-                            headers: {
+-                                "content-length": data.byteLength || data.length
+-                            }
+-                        });
++                        };
+                     }
+-                } else {
++
+                     console.error("Invalid cache item returned:", cacheItem);
+-                    resolve(-1);
++                    return -1;
++                } catch(error) {
++                    console.error("Download error:", error);
++                    return -1;
++                }
++            };
++
++            let result = await attempt(fullPath);
++
++            const typeConfig = Object.values(this.downloadType).find((t) => t.name === type);
++            if (result === -1 && !notWithPath && typeConfig && typeConfig.cdnFallback) {
++                console.log("[EJS " + type + "] " + path + " not found locally, attempting to fetch from the emulatorjs cdn.");
++                console.error("**THIS METHOD IS A FAILSAFE, AND NOT OFFICIALLY SUPPORTED. USE AT YOUR OWN RISK**");
++                const version = this.ejs_version.endsWith("-beta") ? "nightly" : this.ejs_version;
++                result = await attempt(`https://cdn.emulatorjs.org/${version}/data/${path}`);
++                if (result !== -1) {
++                    console.warn("File was not found locally, but was found on the emulatorjs cdn.\nIt is recommended to download the stable release from here: https://cdn.emulatorjs.org/releases/");
+                 }
+-            } catch(error) {
+-                console.error("Download error:", error);
+-                resolve(-1);
+             }
++
++            resolve(result);
+         });
+     }
+     toData(data, rv) {
+@@ -353,10 +363,10 @@
+         
+         // Populate downloadTypes
+         this.downloadType = {
+-            "rom": { "name": "ROM", "dontCache": false, "dontExtractIfCore": ["arcade", "fbneo", "fbalpha2012_cps1", "fbalpha2012_cps2", "same_cdi", "mame", "mame2003_plus", "mame2003"] },
+-            "core": { "name": "Core", "dontCache": false },
+-            "bios": { "name": "BIOS", "dontCache": false, "dontExtractIfCore": ["arcade", "fbneo", "fbalpha2012_cps1", "fbalpha2012_cps2", "same_cdi", "mame", "mame2003_plus", "mame2003"] },
+-            "parent": { "name": "Parent", "dontCache": false },
++            "rom": { "name": "ROM", "dontCache": false, "dontExtractIfCore": ["arcade", "fbneo", "fbalpha2012_cps1", "fbalpha2012_cps2", "same_cdi", "mame", "mame2003_plus", "mame2003", "mame2015", "mame0.243"] },
++            "core": { "name": "Core", "dontCache": false, "cdnFallback": true },
++            "bios": { "name": "BIOS", "dontCache": false, "dontExtractIfCore": ["arcade", "fbneo", "fbalpha2012_cps1", "fbalpha2012_cps2", "same_cdi", "mame", "mame2003_plus", "mame2003", "mame2015", "mame0.243"] },
++            "parent": { "name": "Parent", "dontCache": false, "dontExtractIfCore": ["arcade", "fbneo", "fbalpha2012_cps1", "fbalpha2012_cps2", "same_cdi", "mame", "mame2003_plus", "mame2003", "mame2015", "mame0.243"] },
+             "patch": { "name": "Patch", "dontCache": false },
+             "reports": { "name": "Reports", "dontCache": true },
+             "states": { "name": "States", "dontCache": true },
+@@ -704,10 +714,31 @@
+         const reportUrl = `${report}?v=${cacheBustParam}`;
+ 
+         this.downloadFile(reportUrl, this.downloadType.reports.name, null, false, { responseType: "text", method: "GET" }, false, this.downloadType.reports.dontCache).then(async rep => {
+-            if (rep === -1 || typeof rep === "string" || typeof rep.data === "string") {
++            // PATCH (2026-08-08): downloadFile wraps text responses in an
++            // EJS_CacheItem ({ data: cacheItem }) whose files[0].bytes holds the
++            // UTF-8 JSON bytes. The original code assigned rep = rep.data (the
++            // cacheItem object) and read buildStart/options off it — always
++            // undefined — so report.options.defaultWebGL2 never applied and every
++            // core silently fell back to the -legacy (GLES2) variant. Decode the
++            // JSON bytes instead.
++            if (rep === -1 || typeof rep === "string") {
+                 rep = {};
++            } else if (rep.data && typeof rep.data === "object" && rep.data.files && rep.data.files.length > 0 && rep.data.files[0].bytes) {
++                try {
++                    rep = JSON.parse(new TextDecoder().decode(rep.data.files[0].bytes));
++                } catch (e) {
++                    console.warn("Could not parse core report JSON at " + reportUrl + "!", e);
++                    rep = {};
++                }
++            } else if (typeof rep.data === "string") {
++                try {
++                    rep = JSON.parse(rep.data);
++                } catch (e) {
++                    console.warn("Could not parse core report JSON at " + reportUrl + "!", e);
++                    rep = {};
++                }
+             } else {
+-                rep = rep.data;
++                rep = rep.data || {};
+             }
+             if (!rep.buildStart) {
+                 console.warn("Could not fetch core report JSON at " + reportUrl + "! Core caching will be disabled!");
+@@ -735,25 +766,16 @@
+             // Download the core
+             console.log("[EJS Core] Downloading core:", filename);
+             const corePath = "cores/" + filename;
+-            let res = await this.downloadFile(corePath, this.downloadType.core.name, (progress) => {
++            const res = await this.downloadFile(corePath, this.downloadType.core.name, (progress) => {
+                 this.textElem.innerText = this.localization("Download Game Core") + progress;
+             }, false, { responseType: "arraybuffer", method: "GET" }, true, this.downloadType.core.dontCache);
+             if (res === -1) {
+-                console.log("File not found, attemping to fetch from emulatorjs cdn.");
+-                console.error("**THIS METHOD IS A FAILSAFE, AND NOT OFFICIALLY SUPPORTED. USE AT YOUR OWN RISK**");
+-                let version = this.ejs_version.endsWith("-beta") ? "nightly" : this.ejs_version;
+-                res = await this.downloadFile(`https://cdn.emulatorjs.org/${version}/data/${corePath}`, this.downloadType.core.name, (progress) => {
+-                    this.textElem.innerText = this.localization("Download Game Core") + progress;
+-                }, true, { responseType: "arraybuffer", method: "GET" }, true, this.downloadType.core.dontCache);
+-                if (res === -1) {
+-                    if (!this.supportsWebgl2) {
+-                        this.startGameError(this.localization("Outdated graphics driver"));
+-                    } else {
+-                        this.startGameError(this.localization("Error downloading core") + " (" + filename + ")");
+-                    }
+-                    return;
++                if (!this.supportsWebgl2) {
++                    this.startGameError(this.localization("Outdated graphics driver"));
++                } else {
++                    this.startGameError(this.localization("Error downloading core") + " (" + filename + ")");
+                 }
+-                console.warn("File was not found locally, but was found on the emulatorjs cdn.\nIt is recommended to download the stable release from here: https://cdn.emulatorjs.org/releases/");
++                return;
+             }
+ 
+             // Core download and caching handled by EJS_Download
+@@ -784,6 +806,9 @@
+         parts.splice(parts.length - 1, 1);
+         return parts.join(".");
+     }
++    getFileNameTimestamp(date) {
++        return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
++    }
+     saveInBrowserSupported() {
+         return !!window.indexedDB && (typeof this.config.gameName === "string" || !this.config.gameUrl.startsWith("blob:"));
+     }
+@@ -1217,8 +1242,9 @@
+                 }
+             }
+             this.menu.open();
+-            if (this.isSafari && this.isMobile) {
+-                //Safari is --- funny
++            if (this.isSafari && (this.isMobile || this.hasTouchScreen)) {
++                // iPadOS can use a desktop Safari user agent, so touch support
++                // is a more reliable fallback than mobile user-agent detection.
+                 this.checkStarted();
+             }
+ 
+@@ -1343,17 +1369,19 @@
+         this.gamepad = new GamepadHandler(); //https://github.com/ethanaobrien/Gamepad
+         this.gamepad.on("connected", (e) => {
+             if (!this.gamepadLabels) return;
++            const gamepadSelection = this.getGamepadSelectionValue(e.gamepadIndex);
++            if (!gamepadSelection) return;
+             for (let i = 0; i < this.gamepadSelection.length; i++) {
+                 if (this.gamepadSelection[i] === "") {
+-                    this.gamepadSelection[i] = this.gamepad.gamepads[e.gamepadIndex].id + "_" + this.gamepad.gamepads[e.gamepadIndex].index;
++                    this.gamepadSelection[i] = gamepadSelection;
+                     break;
+                 }
+             }
+             this.updateGamepadLabels();
+         })
+         this.gamepad.on("disconnected", (e) => {
+-            const gamepadIndex = this.gamepad.gamepads.indexOf(this.gamepad.gamepads.find(f => f.index == e.gamepadIndex));
+-            const gamepadSelection = this.gamepad.gamepads[gamepadIndex].id + "_" + this.gamepad.gamepads[gamepadIndex].index;
++            const gamepadSelection = this.getGamepadSelectionValue(e.gamepadIndex);
++            if (!gamepadSelection) return;
+             for (let i = 0; i < this.gamepadSelection.length; i++) {
+                 if (this.gamepadSelection[i] === gamepadSelection) {
+                     this.gamepadSelection[i] = "";
+@@ -1393,6 +1421,13 @@
+             this.gamepadLabels[i].value = this.gamepadSelection[i] || "notconnected";
+         }
+     }
++    getGamepadSelectionValue(gamepadIndex) {
++        const gamepad = this.gamepad.gamepads.find((candidate) => candidate && candidate.index === gamepadIndex);
++        if (!gamepad) {
++            return null;
++        }
++        return gamepad.id + "_" + gamepad.index;
++    }
+     createLink(elem, link, text, useP) {
+         const elm = this.createElement("a");
+         elm.href = link;
+@@ -1675,8 +1710,7 @@
+         let screenshotUrl;
+         const screenshot = addButton("Take Screenshot", false, () => {
+             if (screenshotUrl) URL.revokeObjectURL(screenshotUrl);
+-            const date = new Date();
+-            const fileName = this.getBaseFileName() + "-" + date.getMonth() + "-" + date.getDate() + "-" + date.getFullYear();
++            const fileName = this.getBaseFileName() + "-" + this.getFileNameTimestamp(new Date());
+             this.screenshot((blob, format) => {
+                 screenshotUrl = URL.createObjectURL(blob);
+                 const a = this.createElement("a");
+@@ -1692,7 +1726,20 @@
+             if (screenMediaRecorder !== null) {
+                 screenMediaRecorder.stop();
+             }
+-            screenMediaRecorder = this.screenRecord();
++            const recorder = this.screenRecord();
++            if (recorder === null) {
++                return;
++            }
++            screenMediaRecorder = recorder;
++            const resetScreenRecordingButtons = () => {
++                if (screenMediaRecorder === recorder) {
++                    screenMediaRecorder = null;
++                    startScreenRecording.removeAttribute("hidden");
++                    stopScreenRecording.setAttribute("hidden", "hidden");
++                }
++            };
++            screenMediaRecorder.addEventListener("stop", resetScreenRecordingButtons, { once: true });
++            screenMediaRecorder.addEventListener("error", resetScreenRecordingButtons, { once: true });
+             startScreenRecording.setAttribute("hidden", "hidden");
+             stopScreenRecording.removeAttribute("hidden");
+             hideMenu();
+@@ -2022,6 +2069,7 @@
+         this.createBottomMenuBarListeners = () => {
+             const clickListener = (e) => {
+                 if (e.pointerType === "touch") return;
++                if (window.EJS_MOUSE_GAME) return;
+                 if (!this.started || ignoreEvents || document.pointerLockElement === this.canvas) return;
+                 if (this.isPopupOpen()) return;
+                 show();
+@@ -2029,19 +2077,10 @@
+             const mouseListener = (e) => {
+                 if (!this.started || ignoreEvents || document.pointerLockElement === this.canvas) return;
+                 if (this.isPopupOpen()) return;
+-                const deltaX = e.movementX;
+-                const deltaY = e.movementY;
+                 const threshold = this.elements.menu.offsetHeight + 30;
+-                const mouseY = e.clientY;
+-
+-                if (mouseY >= window.innerHeight - threshold) {
++                if (e.clientY >= window.innerHeight - threshold) {
+                     show();
+-                    return;
+                 }
+-                let angle = Math.atan2(deltaY, deltaX) * (180 / Math.PI);
+-                if (angle < 0) angle += 360;
+-                if (angle < 85 || angle > 95) return;
+-                show();
+             }
+             if (this.menu.mousemoveListener) this.removeEventListener(this.menu.mousemoveListener);
+             
+@@ -2817,6 +2856,20 @@
+                 { id: 6, label: this.localization("LEFT") },
+                 { id: 7, label: this.localization("RIGHT") },
+             ];
++        } else if ("pico8" === this.getControlScheme()) {
++            // PATCH (2026-08-23): PICO-8 — 2 buttons (O/X) + D-Pad + Pause.
++            // Matches fake08 inputDescriptors (libretro.cpp: B=O, A=X, START=Pause).
++            // Keep START bound to Enter (same as now) per user request; labels use
++            // PICO-8 terminology (O/X/Pause) instead of Nintendo A/B/START.
++            buttons = [
++                { id: 0, label: this.localization("O") },
++                { id: 8, label: this.localization("X") },
++                { id: 3, label: this.localization("Pause") },
++                { id: 4, label: this.localization("UP") },
++                { id: 5, label: this.localization("DOWN") },
++                { id: 6, label: this.localization("LEFT") },
++                { id: 7, label: this.localization("RIGHT") },
++            ];
+         } else if ("nes" === this.getControlScheme()) {
+             buttons = [
+                 { id: 8, label: this.localization("A") },
+@@ -2916,7 +2969,7 @@
+                 { id: 17, label: this.localization("RIGHT D-PAD LEFT") },
+                 { id: 16, label: this.localization("RIGHT D-PAD RIGHT") },
+             ];
+-        } else if (["segaMD", "segaCD", "sega32x"].includes(this.getControlScheme())) {
++        } else if (["segaMD", "segaCD", "sega32x", "genesis"].includes(this.getControlScheme())) {
+             buttons = [
+                 { id: 1, label: this.localization("A") },
+                 { id: 0, label: this.localization("B") },
+@@ -2951,13 +3004,16 @@
+                 { id: 7, label: this.localization("RIGHT") },
+             ];
+         } else if ("segaSaturn" === this.getControlScheme()) {
++            // MUSEUM FIX (2026-09-09): stock EJS rotated the six face buttons.
++            // Corrected against yabause set_descriptors() (libretro.c:574-579):
++            // B(0)->A, A(8)->B, R(11)->C, Y(1)->X, X(9)->Y, L(10)->Z, L2/R2->L/R.
+             buttons = [
+-                { id: 1, label: this.localization("A") },
+-                { id: 0, label: this.localization("B") },
+-                { id: 8, label: this.localization("C") },
+-                { id: 9, label: this.localization("X") },
+-                { id: 10, label: this.localization("Y") },
+-                { id: 11, label: this.localization("Z") },
++                { id: 0, label: this.localization("A") },
++                { id: 8, label: this.localization("B") },
++                { id: 11, label: this.localization("C") },
++                { id: 1, label: this.localization("X") },
++                { id: 9, label: this.localization("Y") },
++                { id: 10, label: this.localization("Z") },
+                 { id: 12, label: this.localization("L") },
+                 { id: 13, label: this.localization("R") },
+                 { id: 3, label: this.localization("START") },
+@@ -2965,6 +3021,21 @@
+                 { id: 5, label: this.localization("DOWN") },
+                 { id: 6, label: this.localization("LEFT") },
+                 { id: 7, label: this.localization("RIGHT") },
++                // MUSEUM FIX (2026-09-09, Patch H addendum): list the analog
++                // stick binds. createControlSettingMenu strips every id NOT
++                // listed here from BOTH this.controls and
++                // this.defaultControllers, so without these rows EJS's
++                // axischanged handler finds no binds at 16-19 and the Saturn
++                // 3D Control Pad gets a permanently centered stick (L STICK
++                // = 3D pad axes; R STICK reserved for the future Twin Stick).
++                { id: 19, label: this.localization("L STICK UP") },
++                { id: 18, label: this.localization("L STICK DOWN") },
++                { id: 17, label: this.localization("L STICK LEFT") },
++                { id: 16, label: this.localization("L STICK RIGHT") },
++                { id: 23, label: this.localization("R STICK UP") },
++                { id: 22, label: this.localization("R STICK DOWN") },
++                { id: 21, label: this.localization("R STICK LEFT") },
++                { id: 20, label: this.localization("R STICK RIGHT") },
+             ];
+         } else if ("3do" === this.getControlScheme()) {
+             buttons = [
+@@ -3140,6 +3211,8 @@
+                 { id: 11, label: this.localization("R1") },
+                 { id: 12, label: this.localization("L2") },
+                 { id: 13, label: this.localization("R2") },
++                { id: 14, label: this.localization("L3") },
++                { id: 15, label: this.localization("R3") },
+                 { id: 19, label: this.localization("L STICK UP") },
+                 { id: 18, label: this.localization("L STICK DOWN") },
+                 { id: 17, label: this.localization("L STICK LEFT") },
+@@ -3149,6 +3222,30 @@
+                 { id: 21, label: this.localization("R STICK LEFT") },
+                 { id: 20, label: this.localization("R STICK RIGHT") },
+             ];
++        } else if (["arcade", "mame"].includes(this.getControlScheme())) {
++            // PATCH F (2026-08-23): arcade — faithful cabinet layout. FBNeo/MAME
++            // expose per-game inputs as numbered buttons (input descriptors
++            // "Button 1..6"), carried on generic fire-button RetroPad ids.
++            // MUSEUM FIX (2026-09-09): corrected against FBNeo's FIRE01-06
++            // macros (retro_input.cpp, plain-JOYPAD device): BTN1=B(0),
++            // BTN2=A(8), BTN3=Y(1), BTN4=X(9), BTN5=R(11), BTN6=L(10).
++            // Coin/Start replace Select/Start. Menu trimmed to
++            // cabinet-relevant controls only (no console shoulders/sticks).
++            // Keyboard/gamepad bindings untouched.
++            buttons = [
++                { id: 0, label: this.localization("BUTTON 1") },
++                { id: 8, label: this.localization("BUTTON 2") },
++                { id: 1, label: this.localization("BUTTON 3") },
++                { id: 9, label: this.localization("BUTTON 4") },
++                { id: 11, label: this.localization("BUTTON 5") },
++                { id: 10, label: this.localization("BUTTON 6") },
++                { id: 2, label: this.localization("INSERT COIN") },
++                { id: 3, label: this.localization("START") },
++                { id: 4, label: this.localization("UP") },
++                { id: 5, label: this.localization("DOWN") },
++                { id: 6, label: this.localization("LEFT") },
++                { id: 7, label: this.localization("RIGHT") },
++            ];
+         } else {
+             buttons = [
+                 { id: 0, label: this.localization("B") },
+@@ -3862,7 +3959,11 @@
+     }
+     gamepadEvent(e) {
+         if (!this.started) return;
+-        const gamepadIndex = this.gamepadSelection.indexOf(this.gamepad.gamepads[e.gamepadIndex].id + "_" + this.gamepad.gamepads[e.gamepadIndex].index);
++        const gamepadSelection = this.getGamepadSelectionValue(e.gamepadIndex);
++        if (!gamepadSelection) {
++            return;
++        }
++        const gamepadIndex = this.gamepadSelection.indexOf(gamepadSelection);
+         if (gamepadIndex < 0) {
+             return; // Gamepad not set anywhere
+         }
+@@ -4090,7 +4191,9 @@
+                 { "type": "button", "text": "R", "id": "r", "location": "right", "right": 3, "top": -100, "bold": true, "block": true, "input_value": 11 }
+             ];
+             info.push(...speedControlButtons);
+-        } else if (["segaMD", "segaCD", "sega32x"].includes(this.getControlScheme())) {
++        } else if (["segaMD", "segaCD", "sega32x", "genesis"].includes(this.getControlScheme())) {
++            // MUSEUM FIX (2026-09-09): added "genesis" — the menu branch already
++            // maps it, but touch fell through to the SNES-style default.
+             info = [
+                 { "type": "button", "text": "A", "id": "a", "location": "right", "right": 145, "top": 70, "bold": true, "input_value": 1 },
+                 { "type": "button", "text": "B", "id": "b", "location": "right", "right": 75, "top": 70, "bold": true, "input_value": 0 },
+@@ -4119,13 +4222,16 @@
+             ];
+             info.push(...speedControlButtons);
+         } else if ("segaSaturn" === this.getControlScheme()) {
++            // MUSEUM FIX (2026-09-09): same face-button rotation as the Control
++            // Settings branch above — input_value is the RetroPad id, so
++            // A=0, B=8, C=11, X=1, Y=9, Z=10 per yabause set_descriptors().
+             info = [
+-                { "type": "button", "text": "A", "id": "a", "location": "right", "right": 145, "top": 70, "bold": true, "input_value": 1 },
+-                { "type": "button", "text": "B", "id": "b", "location": "right", "right": 75, "top": 70, "bold": true, "input_value": 0 },
+-                { "type": "button", "text": "C", "id": "c", "location": "right", "right": 5, "top": 70, "bold": true, "input_value": 8 },
+-                { "type": "button", "text": "X", "id": "x", "location": "right", "right": 145, "top": 0, "bold": true, "input_value": 9 },
+-                { "type": "button", "text": "Y", "id": "y", "location": "right", "right": 75, "top": 0, "bold": true, "input_value": 10 },
+-                { "type": "button", "text": "Z", "id": "z", "location": "right", "right": 5, "top": 0, "bold": true, "input_value": 11 },
++                { "type": "button", "text": "A", "id": "a", "location": "right", "right": 145, "top": 70, "bold": true, "input_value": 0 },
++                { "type": "button", "text": "B", "id": "b", "location": "right", "right": 75, "top": 70, "bold": true, "input_value": 8 },
++                { "type": "button", "text": "C", "id": "c", "location": "right", "right": 5, "top": 70, "bold": true, "input_value": 11 },
++                { "type": "button", "text": "X", "id": "x", "location": "right", "right": 145, "top": 0, "bold": true, "input_value": 1 },
++                { "type": "button", "text": "Y", "id": "y", "location": "right", "right": 75, "top": 0, "bold": true, "input_value": 9 },
++                { "type": "button", "text": "Z", "id": "z", "location": "right", "right": 5, "top": 0, "bold": true, "input_value": 10 },
+                 { "type": "dpad", "id": "dpad", "location": "left", "left": "50%", "right": "50%", "joystickInput": false, "inputValues": [4, 5, 6, 7] },
+                 { "type": "button", "text": "L", "id": "l", "location": "left", "left": 3, "top": -90, "bold": true, "block": true, "input_value": 12 },
+                 { "type": "button", "text": "R", "id": "r", "location": "right", "right": 3, "top": -90, "bold": true, "block": true, "input_value": 13 },
+@@ -4240,6 +4346,70 @@
+                 { "type": "button", "text": "Run", "id": "run", "location": "center", "left": 60, "fontSize": 15, "block": true, "input_value": 3 }
+             ];
+             info.push(...speedControlButtons);
++        } else if (["arcade", "mame"].includes(this.getControlScheme())) {
++            // PATCH H (2026-09-09): arcade touch overlay (was: SNES-style
++            // default). Numbered cabinet buttons on the corrected FIRE01-06
++            // RetroPad ids: BTN1=B(0), BTN2=A(8), BTN3=Y(1), BTN4=X(9),
++            // BTN5=R(11), BTN6=L(10). INSERT COIN replaces Select.
++            info = [
++                { "type": "button", "text": "1", "id": "b1", "location": "right", "right": 145, "top": 70, "bold": true, "input_value": 0 },
++                { "type": "button", "text": "2", "id": "b2", "location": "right", "right": 75, "top": 70, "bold": true, "input_value": 8 },
++                { "type": "button", "text": "3", "id": "b3", "location": "right", "right": 5, "top": 70, "bold": true, "input_value": 1 },
++                { "type": "button", "text": "4", "id": "b4", "location": "right", "right": 145, "top": 0, "bold": true, "input_value": 9 },
++                { "type": "button", "text": "5", "id": "b5", "location": "right", "right": 75, "top": 0, "bold": true, "input_value": 11 },
++                { "type": "button", "text": "6", "id": "b6", "location": "right", "right": 5, "top": 0, "bold": true, "input_value": 10 },
++                { "type": "dpad", "id": "dpad", "location": "left", "left": "50%", "right": "50%", "joystickInput": false, "inputValues": [4, 5, 6, 7] },
++                { "type": "button", "text": "Coin", "id": "coin", "location": "center", "left": -5, "fontSize": 15, "block": true, "input_value": 2 },
++                { "type": "button", "text": "Start", "id": "start", "location": "center", "left": 60, "fontSize": 15, "block": true, "input_value": 3 }
++            ];
++            info.push(...speedControlButtons);
++        } else if ("pico8" === this.getControlScheme()) {
++            // PATCH H (2026-09-09): PICO-8 touch overlay (was: SNES-style
++            // default). O=south/B(0), X=east/A(8), Pause=START(3) per fake08
++            // input_desc[] (platform/libretro/libretro.cpp).
++            info = [
++                { "type": "button", "text": "O", "id": "o", "location": "right", "right": 75, "top": 70, "bold": true, "input_value": 0 },
++                { "type": "button", "text": "X", "id": "x", "location": "right", "right": 5, "top": 70, "bold": true, "input_value": 8 },
++                { "type": "dpad", "id": "dpad", "location": "left", "left": "50%", "right": "50%", "joystickInput": false, "inputValues": [4, 5, 6, 7] },
++                { "type": "button", "text": "Pause", "id": "pause", "location": "center", "left": 30, "fontSize": 15, "block": true, "input_value": 3 }
++            ];
++            info.push(...speedControlButtons);
++        } else if ("psx" === this.getControlScheme()) {
++            // PATCH H (2026-09-09): PSX touch overlay (was: SNES-style
++            // default). Label-aligned diamond per pcsx_rearmed JOYP(port)
++            // (frontend/libretro.c): X=B(0), Square=Y(1), Circle=A(8),
++            // Triangle=X(9), L1=L(10), R1=R(11), L2=L2(12), R2=R2(13).
++            info = [
++                { "type": "button", "text": "Square", "id": "square", "location": "right", "right": 145, "top": 70, "bold": true, "input_value": 1 },
++                { "type": "button", "text": "O", "id": "o", "location": "right", "right": 75, "top": 70, "bold": true, "input_value": 8 },
++                { "type": "button", "text": "X", "id": "x", "location": "right", "right": 5, "top": 70, "bold": true, "input_value": 0 },
++                { "type": "button", "text": "Triangle", "id": "tri", "location": "right", "right": 75, "top": 0, "bold": true, "input_value": 9 },
++                { "type": "dpad", "id": "dpad", "location": "left", "left": "50%", "right": "50%", "joystickInput": false, "inputValues": [4, 5, 6, 7] },
++                { "type": "button", "text": "L1", "id": "l1", "location": "left", "left": 3, "top": -90, "bold": true, "block": true, "input_value": 10 },
++                { "type": "button", "text": "R1", "id": "r1", "location": "right", "right": 3, "top": -90, "bold": true, "block": true, "input_value": 11 },
++                { "type": "button", "text": "L2", "id": "l2", "location": "left", "left": 3, "top": -45, "bold": true, "block": true, "input_value": 12 },
++                { "type": "button", "text": "R2", "id": "r2", "location": "right", "right": 3, "top": -45, "bold": true, "block": true, "input_value": 13 },
++                { "type": "button", "text": "Select", "id": "select", "location": "center", "left": -5, "fontSize": 15, "block": true, "input_value": 2 },
++                { "type": "button", "text": "Start", "id": "start", "location": "center", "left": 60, "fontSize": 15, "block": true, "input_value": 3 }
++            ];
++            info.push(...speedControlButtons);
++        } else if ("psp" === this.getControlScheme()) {
++            // PATCH H (2026-09-09): PSP touch overlay (was: SNES-style
++            // default). Same diamond as ppsspp descriptors
++            // (ppsspp-libretro/libretro/libretro.cpp): Cross=B(0),
++            // Circle=A(8), Triangle=X(9), Square=Y(1). No L2/R2 on real HW.
++            info = [
++                { "type": "button", "text": "Square", "id": "square", "location": "right", "right": 145, "top": 70, "bold": true, "input_value": 1 },
++                { "type": "button", "text": "Circle", "id": "circle", "location": "right", "right": 75, "top": 70, "bold": true, "input_value": 8 },
++                { "type": "button", "text": "Cross", "id": "cross", "location": "right", "right": 5, "top": 70, "bold": true, "input_value": 0 },
++                { "type": "button", "text": "Triangle", "id": "tri", "location": "right", "right": 75, "top": 0, "bold": true, "input_value": 9 },
++                { "type": "dpad", "id": "dpad", "location": "left", "left": "50%", "right": "50%", "joystickInput": false, "inputValues": [4, 5, 6, 7] },
++                { "type": "button", "text": "L", "id": "l", "location": "left", "left": 3, "top": -90, "bold": true, "block": true, "input_value": 10 },
++                { "type": "button", "text": "R", "id": "r", "location": "right", "right": 3, "top": -90, "bold": true, "block": true, "input_value": 11 },
++                { "type": "button", "text": "Select", "id": "select", "location": "center", "left": -5, "fontSize": 15, "block": true, "input_value": 2 },
++                { "type": "button", "text": "Start", "id": "start", "location": "center", "left": 60, "fontSize": 15, "block": true, "input_value": 3 }
++            ];
++            info.push(...speedControlButtons);
+         } else {
+             info = [
+                 { "type": "button", "text": "Y", "id": "y", "location": "right", "left": 40, "bold": true, "input_value": 9 },
+@@ -4748,7 +4918,24 @@
+             try {
+                 coreSpecific = JSON.parse(coreSpecific);
+                 if (!(coreSpecific.controlSettings instanceof Object) || !(coreSpecific.settings instanceof Object) || !Array.isArray(coreSpecific.cheats)) return;
+-                this.controls = coreSpecific.controlSettings;
++                // PATCH I (2026-09-09): backfill analog-stick binds (16-23)
++                // that older snapshots lost to createControlSettingMenu's
++                // strip loop (schemes like segaSaturn didn't list them, so
++                // controls/defaultControllers were stripped and EJS's axis
++                // handler went dead — the Saturn 3D Control Pad stick). Only
++                // MISSING ids are backfilled from the defaults; deliberate
++                // rebinds/clears of everything else still win.
++                const restoredControls = coreSpecific.controlSettings;
++                for (let p = 0; p < 4; p++) {
++                    const defs = this.defaultControllers[p] || {};
++                    if (!restoredControls[p]) restoredControls[p] = {};
++                    for (const ax of this.analogAxes) {
++                        if (restoredControls[p][ax] === undefined && defs[ax]) {
++                            restoredControls[p][ax] = defs[ax];
++                        }
++                    }
++                }
++                this.controls = restoredControls;
+                 this.checkGamepadInputs();
+                 for (const k in coreSpecific.settings) {
+                     this.changeSettingOption(k, coreSpecific.settings[k]);
+@@ -5359,6 +5546,7 @@
+                 "disabled": this.localization("Disabled"),
+             };
+             for (const shaderName in this.shaders) {
++                if (shaderName.endsWith(".glsl")) continue; // raw shader bodies aren't selectable presets
+                 if (builtinShaders[shaderName]) {
+                     shaderMenu[shaderName] = builtinShaders[shaderName];
+                 } else {
+@@ -6367,10 +6555,9 @@
+         recorder.addEventListener("stop", () => {
+             const blob = new Blob(chunks);
+             const url = URL.createObjectURL(blob);
+-            const date = new Date();
+             const a = document.createElement("a");
+             a.href = url;
+-            a.download = this.getBaseFileName() + "-" + date.getMonth() + "-" + date.getDate() + "-" + date.getFullYear() + "." + captureFormat;
++            a.download = this.getBaseFileName() + "-" + this.getFileNameTimestamp(new Date()) + "." + captureFormat;
+             a.click();
+ 
+             animation = false;

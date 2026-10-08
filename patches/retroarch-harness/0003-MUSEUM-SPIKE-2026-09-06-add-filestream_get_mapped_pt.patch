@@ -1,0 +1,50 @@
+From cab627f31e9b3072c622c6c0364a629400606cb3 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:50:53 -0300
+Subject: [PATCH 3/6] MUSEUM SPIKE (2026-09-06): add filestream_get_mapped_ptr
+ for mmap'd CHDs
+
+beetle-saturn's vendored libretro-common gained filestream_get_mapped_ptr
+(mmap'd CHD support) after this tree's copy. Under STATIC_LINKING the core
+skips compiling its own file_stream.c and expects the frontend to export
+this symbol; without it emscripten builds an aborting import stub and the
+core dies at the first CHD open with:
+
+  Aborted(missing function: filestream_get_mapped_ptr)
+
+Upstream contract: return NULL (and zero the len) when no direct mapping
+is available, letting the caller fall back to the read path.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ libretro-common/streams/file_stream.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/libretro-common/streams/file_stream.c b/libretro-common/streams/file_stream.c
+index d0a1ffefb2..2c387d9975 100644
+--- a/libretro-common/streams/file_stream.c
++++ b/libretro-common/streams/file_stream.c
+@@ -698,3 +698,20 @@ libretro_vfs_implementation_file* filestream_get_vfs_handle(RFILE *stream)
+ {
+    return (libretro_vfs_implementation_file*)stream->hfile;
+ }
++
++/* MUSEUM SPIKE (2026-09-06): beetle-saturn's vendored libretro-common gained
++ * filestream_get_mapped_ptr (mmap'd CHD support) after this tree's copy.
++ * With STATIC_LINKING the core skips compiling its own file_stream.c and
++ * expects the frontend to export this; without it emscripten builds an
++ * aborting import stub and the core dies at first CHD open
++ * (Aborted(missing function: filestream_get_mapped_ptr)). The upstream
++ * contract: return NULL (and zero the len) when no direct mapping is
++ * available — callers (CDAccess_CHD.c) fall back to buffered
++ * filestream_read callbacks, so a conservative NULL stub is correct. */
++const uint8_t *filestream_get_mapped_ptr(RFILE *stream, int64_t *len)
++{
++   if (len)
++      *len = 0;
++   (void)stream;
++   return NULL;
++}
+-- 
+2.43.0
+

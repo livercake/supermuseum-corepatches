@@ -1,0 +1,151 @@
+From 8fd905f1fc67a88b1a7da581ab3f485daaa5652f Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:50:37 -0300
+Subject: [PATCH 1/6] MUSEUM FIX (2026-09-13): export ejs_get_memory_map for
+ rcheevos descriptors
+
+Adds ejs_get_memory_map() to retroarch.c and _ejs_get_memory_map to the
+EJS harness EXPORTED_FUNCTIONS list.
+
+The RA bridge in public/ra/racheevos.{js,wasm} prefers the core's libretro
+memory descriptors over a flat RETRO_MEMORY_SYSTEM_RAM mirror, because
+rcheevos validates every achievement address through read_memory at load
+time. Cores that expose no descriptor path (stock June-2025 EmulatorJS
+builds) mark every address above the flat mirror invalid, which silently
+disables achievements.
+
+Affects every self-built RA-capable core: gambatte (GB HRAM $FF80-$FFFE),
+mgba (IWRAM/EWRAM/SRAM), mednafen_pce (8KB flat work RAM), and any future
+relink that needs non-SYSTEM_RAM regions.
+
+See arties/GPL-Source-Preservation-Plan.md and AGENTS.md
+"Arcade RetroAchievements Compatibility".
+---
+ Makefile.emulatorjs | 52 +++++++++++++++++++++++++++++++++++++++++----
+ retroarch.c         | 31 +++++++++++++++++++++++++++
+ 2 files changed, 79 insertions(+), 4 deletions(-)
+
+diff --git a/Makefile.emulatorjs b/Makefile.emulatorjs
+index b5862b37f2..fab0ededcd 100644
+--- a/Makefile.emulatorjs
++++ b/Makefile.emulatorjs
+@@ -126,7 +126,7 @@ EXPORTED_FUNCTIONS = _main,_malloc,_free,_load_state, \
+                      _system_restart,_cmd_savefiles,_get_core_options,_get_core_options_json,_cmd_save_state,_supports_states,_reset_cheat,_toggleMainLoop, \
+                      _save_file_path,_get_disk_count,_set_current_disk,_get_current_disk,_refresh_save_files,_toggle_fastforward,_set_ff_ratio, \
+                      _toggle_slow_motion,_set_sm_ratio,_toggle_rewind,_set_rewind_granularity,_get_current_frame_count,_ejs_set_keyboard_enabled, \
+-                     _set_vsync,_set_video_rotation,_get_video_dimensions,EmscriptenSendCommand,EmscriptenReceiveCommandReply,_get_memory_data, \
++                     _set_vsync,_set_video_rotation,_get_video_dimensions,EmscriptenSendCommand,EmscriptenReceiveCommandReply,_get_memory_data,_ejs_get_memory_map, \
+                      _ejs_set_controller_port_device,_ejs_get_controller_port_info
+ 
+ EXPORTS := Browser,callMain,cwrap,getValue,HEAPU8,FS,PATH,ERRNO_CODES,AL,abort,ENV,stringToNewUTF8,UTF8ToString,Browser,EmscriptenSendCommand,EmscriptenReceiveCommandReply,EmulatorJSGetState,EmulatorJSGetMemoryData
+@@ -178,7 +178,51 @@ LDFLAGS := -L. $(LIBS) -s STACK_SIZE=$(STACK_SIZE) -s INITIAL_MEMORY=$(INITIAL_H
+ 
+ ifneq (,$(findstring same_cdi,$(TARGET)))
+    LDFLAGS += -s ASSERTIONS
+-   LDFLAGS += -s EXCEPTION_CATCHING_ALLOWED="['_ZN18m68000_base_device11execute_runEv','_ZThn328_N18m68000_base_device11execute_runEv','_ZN15running_machine17start_all_devicesEv','_ZN12cli_frontend7executeEiPPc','_ZN8chd_file11open_commonEb','_ZN8chd_file13read_metadataEjjRNSt3__212basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE','_ZN8chd_file13read_metadataEjjRNSt3__26vectorIhNS0_9allocatorIhEEEE','_ZNK19netlist_mame_device19base_validity_checkER16validity_checker']"
++    LDFLAGS += -s EXCEPTION_CATCHING_ALLOWED="['_ZN18m68000_base_device11execute_runEv','_ZThn328_N18m68000_base_device11execute_runEv','_ZN15running_machine17start_all_devicesEv','_ZN12cli_frontend7executeERNSt3__26vectorINS0_12basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEENS5_IS7_EEEE','_ZN8chd_file11open_commonEb','_ZN8chd_file13read_metadataEjjRNSt3__212basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE','_ZN8chd_file13read_metadataEjjRNSt3__26vectorIhNS0_9allocatorIhEEEE','_ZNK19netlist_mame_device19base_validity_checkER16validity_checker']"
++endif
++
++# MAME cores rely on C++ exceptions for normal control flow (emu_fatalerror,
++# driver-not-found, ROM mismatch). Emscripten's default DISABLE_EXCEPTION_CATCHING=2
++# strips catch blocks outside the whitelist, so any exception reaching an
++# unlisted catch site aborts the core. Enable full exception support instead.
++ifneq (,$(findstring mame0.243,$(TARGET)))
++   LDFLAGS += -s DISABLE_EXCEPTION_CATCHING=0
++endif
++
++# fake-08 (PICO-8): z8lua is built with LUA_USE_LONGJMP (setjmp/longjmp for Lua
++# error + coroutine unwinding instead of C++ exceptions). Emscripten needs the
++# SjLj support linked in explicitly.
++ifneq (,$(findstring fake08,$(TARGET)))
++   LDFLAGS += -s SUPPORT_LONGJMP=1
++endif
++
++# mednafen_saturn (Beetle): with M68K_SPLIT_SWITCH=1 the core compiles m68k.c AND
++# m68k_instr_split0/1.c, which all emit out-of-line copies of the shared INLINE
++# helpers from m68k_private.h (RecalcInt, Read_u8, ...). All copies are identical
++# codegen, so keep the first instead of failing the link (MUSEUM FIX 2026-09-09 —
++# without this the thread link dies with duplicate-symbol errors and the
++# shipped core black-screens).
++# mednafen_psx (Beetle SW, 2026-09-29): same flag for a narrower collision —
++# the core archive bundles image_texture/image_transfer/rpng objects that
++# duplicate the harness copies (18 symbols, zero libchdr — the core's own
++# libchdr is uncontested thanks to noCHD). First-wins keeps the harness
++# PNG/texture helpers; functionally identical stable APIs.
++ifneq (,$(findstring mednafen_saturn,$(TARGET))$(findstring mednafen_psx,$(TARGET)))
++   LDFLAGS += -Wl,--allow-multiple-definition
++endif
++
++# mednafen_psx (Beetle SW, analog OSD smosh): wrap osd_message() so the
++# DualShock analog-toggle notice ("DualShock on port N: Analog|Digital
++# Mode") -- which RetroArch bakes into the canvas frame as gfx-widget text,
++# unreachable from EJS DOM/CSS -- is forwarded to the parent as a
++# coreMessage post (EmulatorOverlay's showToast pill) and suppressed
++# canvas-side. All other messages fall through to the real implementation.
++# museum_osd_wrap.c compiles via the generic $(OBJDIR)/%.o rule; the --wrap
++# flag redirects every archive call site, so no core recompile is needed on
++# relink. Matches mednafen_psx_hw too (same source family) for consistency.
++ifneq (,$(findstring mednafen_psx,$(TARGET)))
++   OBJ += museum_osd_wrap.o
++   LDFLAGS += -Wl,--wrap=osd_message
+ endif
+ 
+ ifeq ($(HAVE_OPENGLES), 1)
+@@ -303,10 +347,10 @@ ifeq ($(DEBUG), 1)
+    # -O0 in cflags gives "too many locals" errors
+    CFLAGS += -O1 -g -gsource-map
+ else ifeq ($(LIGHT_DEBUG), 1)
+-   LDFLAGS += -O2 -g -s ASSERTIONS=1
++   LDFLAGS += -O2 -g -s ASSERTIONS=1 -s STACK_OVERFLOW_CHECK=2
+    CFLAGS += -O2 -g
+ else
+-   LDFLAGS += -O3
++   LDFLAGS += -O2
+    # WARNING: some optimizations can break some cores (ex: LTO breaks tyrquake)
+    ifeq ($(LTO), 1)
+       LDFLAGS += -flto
+diff --git a/retroarch.c b/retroarch.c
+index 17ec9fb99a..3f8fc511a2 100644
+--- a/retroarch.c
++++ b/retroarch.c
+@@ -6238,6 +6238,37 @@ char* get_memory_data(char* key) {
+    return state_data; // This must be freed by the JavaScript side!
+ }
+ 
++char* ejs_get_memory_map(void) {
++   static char state_data[8192];
++   size_t used = 0;
++   unsigned i;
++   runloop_state_t *runloop_st = runloop_state_get_ptr();
++   rarch_memory_map_t *mmaps = runloop_st ? &runloop_st->system.mmaps : NULL;
++
++   memset(state_data, '\0', sizeof(state_data));
++
++   if (!mmaps || !mmaps->descriptors || mmaps->num_descriptors == 0) {
++      snprintf(state_data, sizeof(state_data), "0");
++      return state_data;
++   }
++
++   used = snprintf(state_data, sizeof(state_data), "%u\n", mmaps->num_descriptors);
++   for (i = 0; i < mmaps->num_descriptors && used < sizeof(state_data); i++) {
++      const struct retro_memory_descriptor *desc = &mmaps->descriptors[i].core;
++      used += snprintf(state_data + used, sizeof(state_data) - used,
++            "%lX|%lX|%lX|%lX|%lX|%lX|%llX\n",
++            (unsigned long)desc->ptr,
++            (unsigned long)desc->offset,
++            (unsigned long)desc->start,
++            (unsigned long)desc->select,
++            (unsigned long)desc->disconnect,
++            (unsigned long)desc->len,
++            (unsigned long long)desc->flags);
++   }
++
++   return state_data;
++}
++
+ bool ejs_is_paused(void) {
+    return EJS_PAUSED;
+ }
+-- 
+2.43.0
+

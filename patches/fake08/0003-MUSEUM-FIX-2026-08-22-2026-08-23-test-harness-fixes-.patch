@@ -1,0 +1,102 @@
+From 35ddcb5eb3be4afb2a5e5471f5c4e3a18bcb697f Mon Sep 17 00:00:00 2001
+From: SuperMuseum patch capture <noreply@anthropic.com>
+Date: Wed, 7 Oct 2026 22:16:21 -0300
+Subject: [PATCH 3/3] MUSEUM FIX (2026-08-22 + 2026-08-23): test-harness fixes
+ for the museum test rig
+
+- nooplogger.cpp: include <cstdio> and actually vprintf the log line. The
+  stock stub swallowed all output, so the fake08-diag lines and
+  GetCartLoadError() tracing were invisible when running the native
+  doctest rig (~/core-builds/source/fake-08/test/danktombtests.cpp).
+- vmtests.cpp: extend the reset test to 0x10000 and assert userData
+  survives a Reset(), covering the 2026-08-23 multicart handoff change.
+- customLuaTests.cpp: regression case "cab ride repro: elseif chain with
+  nil field" -- the Dank Tomb room-rebuild crash shape that motivated the
+  cart-side compatibility shim (attempt to perform arithmetic on field
+  'qj', a nil value).
+
+Note: only these 3 files are museum changes. The other test/ entries
+(160+ .p8.png carts, batchtests.cpp) are upstream fixtures and local
+onboarding material, deliberately NOT committed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/customLuaTests.cpp | 24 ++++++++++++++++++++++++
+ test/nooplogger.cpp     |  2 ++
+ test/vmtests.cpp        |  6 +++++-
+ 3 files changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/test/customLuaTests.cpp b/test/customLuaTests.cpp
+index f729e6e..06fb603 100644
+--- a/test/customLuaTests.cpp
++++ b/test/customLuaTests.cpp
+@@ -397,3 +397,27 @@ TEST_CASE("Shorthand IF braces logic") {
+ 
+     lua_close(L);
+ }
++
++TEST_CASE("cab ride repro: elseif chain with nil field") {
++    lua_State *L = luaL_newstate();
++    luaL_openlibs(L);
++    const char* code =
++        "t={typ=3,len=28,tu=0.1}\n"
++        "calls=0\n"
++        "function trackside() calls=calls+1 end\n"
++        "function station_stuff() calls=calls+10 end\n"
++        "typ=3\n"
++        "r=t\n"
++        "if typ==0 or typ==5 then\n"
++        " trackside()\n"
++        "elseif r.station then\n"
++        " station_stuff()\n"
++        "end\n"
++        "return calls";
++    int result = luaL_dostring(L, code);
++    CHECK_MESSAGE(result == LUA_OK, lua_tostring(L, -1));
++    if (result == LUA_OK) {
++        CHECK_EQ((int)lua_tointeger(L, -1), 0);
++    }
++    lua_close(L);
++}
+diff --git a/test/nooplogger.cpp b/test/nooplogger.cpp
+index 4286f9c..d09c006 100644
+--- a/test/nooplogger.cpp
++++ b/test/nooplogger.cpp
+@@ -12,8 +12,10 @@ void Logger_LogOutput(const char * func, size_t line, const char * format, ...)
+ {
+ }
+ 
++#include <cstdio>
+ void Logger_Write(const char * format, ...)
+ {
++    va_list ap; va_start(ap, format); vprintf(format, ap); va_end(ap);
+ }
+ 
+ void Logger_WriteUnformatted(const char * message)
+diff --git a/test/vmtests.cpp b/test/vmtests.cpp
+index d7f6c3f..618b309 100644
+--- a/test/vmtests.cpp
++++ b/test/vmtests.cpp
+@@ -32,7 +32,7 @@ TEST_CASE("Vm memory functions") {
+         memory->Reset();
+ 
+         bool correctValues = true;
+-        for(int i = 0; i < 0x8000; ++i) {
++        for(int i = 0; i < 0x10000; ++i) {
+             if (i == 0x5f5e) {
+                 correctValues &= memory->data[i] == 255;
+             }
+@@ -45,6 +45,10 @@ TEST_CASE("Vm memory functions") {
+             else if (i == 0x5f57) {
+                 correctValues &= memory->data[i] == 128;
+             }
++            else if (i >= 0x8000) {
++                // MUSEUM FIX (2026-08-23): userData survives resets (multicart handoff)
++                correctValues &= memory->data[i] == (i & 255);
++            }
+             else if (i < 0x4300 || i > 0x5eff) {
+                 correctValues &= memory->data[i] == 0;
+             }
+-- 
+2.43.0
+

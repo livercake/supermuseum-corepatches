@@ -1,0 +1,89 @@
+From 0d7a276429568472952cef78eb4944166252c718 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:57:44 -0300
+Subject: [PATCH 5/5] MUSEUM FIX: emscripten build compatibility for sol2,
+ genie and retro OSD
+
+Three build-side fixes needed to compile mame0.243 under emsdk 3.1.74.
+No emulation behavior depends on them.
+
+1. 3rdparty/sol2/sol/sol.hpp -- replace the variadic
+   T& emplace(Args&&...) noexcept overload with a reference-taking
+   T& emplace(T& arg). The variadic form relies on
+   std::is_constructible + placement construct, which does not resolve
+   under the emscripten toolchain; the reference form m_value = &arg is
+   equivalent for the call sites MAME uses.
+
+2. scripts/genie.lua -- add ASIO_HAS_PTHREADS to the generated defines so
+   ASIO picks its pthread path, and drop "--memory-init-file 0" from the
+   link flags (not a valid emscripten linker argument).
+
+3. scripts/src/osd/retro.lua -- gate the host-only branch on
+   _OPTIONS["targetos"] ~= "asmjs" so the emscripten target does not emit
+   the asm.js runtime path.
+
+MUST be re-applied on any future mame0.243 rebuild.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ 3rdparty/sol2/sol/sol.hpp | 9 +++------
+ scripts/genie.lua         | 4 +++-
+ scripts/src/osd/retro.lua | 2 +-
+ 3 files changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/3rdparty/sol2/sol/sol.hpp b/3rdparty/sol2/sol/sol.hpp
+index 9e0b5f8533..f88df70748 100644
+--- a/3rdparty/sol2/sol/sol.hpp
++++ b/3rdparty/sol2/sol/sol.hpp
+@@ -6051,12 +6051,9 @@ namespace sol {
+ 		/// one.
+ 		///
+ 		/// \group emplace
+-		template <class... Args>
+-		T& emplace(Args&&... args) noexcept {
+-			static_assert(std::is_constructible<T, Args&&...>::value, "T must be constructible with Args");
+-
+-			*this = nullopt;
+-			this->construct(std::forward<Args>(args)...);
++		T& emplace(T& arg) noexcept {
++			m_value = &arg;
++			return **this;
+ 		}
+ 
+ 		/// Swaps this optional with the other.
+diff --git a/scripts/genie.lua b/scripts/genie.lua
+index 09af23daf8..90e8f8c9e9 100644
+--- a/scripts/genie.lua
++++ b/scripts/genie.lua
+@@ -1199,12 +1199,14 @@ configuration { "asmjs" }
+ 		"-std=c++17",
+ 		"-s EXCEPTION_CATCHING_ALLOWED=\"['_ZN15running_machine17start_all_devicesEv','_ZN12cli_frontend7executeEiPPc','_ZN8chd_file11open_commonEb','_ZN8chd_file13read_metadataEjjRNSt3__212basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE','_ZN8chd_file13read_metadataEjjRNSt3__26vectorIhNS0_9allocatorIhEEEE','_ZNK19netlist_mame_device19base_validity_checkER16validity_checker']\"",
+ 	}
++	defines {
++		"ASIO_HAS_PTHREADS",
++	}
+ 	linkoptions {
+ 		"-Wl,--start-group",
+ 		"-O" .. _OPTIONS["OPTIMIZE"],
+ 		"-s USE_SDL=2",
+ 		"-s USE_SDL_TTF=2",
+-		"--memory-init-file 0",
+ 		"-s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE=\"['\\$$ERRNO_CODES']\"",
+ 		"-s EXPORTED_FUNCTIONS=\"['_main', '_malloc', '__ZN15running_machine30emscripten_get_running_machineEv', '__ZN15running_machine17emscripten_get_uiEv', '__ZN15running_machine20emscripten_get_soundEv', '__ZN15mame_ui_manager12set_show_fpsEb', '__ZNK15mame_ui_manager8show_fpsEv', '__ZN13sound_manager4muteEbh', '_SDL_PauseAudio', '_SDL_SendKeyboardKey', '__ZN15running_machine15emscripten_saveEPKc', '__ZN15running_machine15emscripten_loadEPKc', '__ZN15running_machine21emscripten_hard_resetEv', '__ZN15running_machine21emscripten_soft_resetEv', '__ZN15running_machine15emscripten_exitEv']\"",
+ 		"-s EXPORTED_RUNTIME_METHODS=\"['cwrap']\"",
+diff --git a/scripts/src/osd/retro.lua b/scripts/src/osd/retro.lua
+index a8e9383091..232c19f2b3 100644
+--- a/scripts/src/osd/retro.lua
++++ b/scripts/src/osd/retro.lua
+@@ -59,7 +59,7 @@ if BASE_TARGETOS=="unix" then
+ 					"socket",
+ 					"nsl",
+ 				}
+-			else
++			elseif _OPTIONS["targetos"]~="asmjs" then
+ 				links {
+ 					"util",
+ 				}
+-- 
+2.43.0
+

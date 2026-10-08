@@ -1,0 +1,70 @@
+From eeeba8e45051748ffcbb32d47f9d1bad07da6635 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:56:10 -0300
+Subject: [PATCH 1/2] MUSEUM FIX (2026-09-15): expose WorkRAM descriptors for
+ RetroAchievements
+
+Unified WorkRAM[2MB] = Low 1MB (bus 0x00200000) + High 1MB (bus
+0x06000000), mirroring yabause's LowWram/HighWram split and rcheevos'
+Saturn region table (Work RAM Low / Work RAM High).
+
+Two 1MB descriptors rather than one 2MB descriptor, so the museum bridge's
+1MB descriptor filter passes them through.
+
+Static storage: RetroArch copies descriptors on SET_MEMORY_MAPS, but static
+is safe either way.
+
+Requires the harness export ejs_get_memory_map() (see
+~/core-builds/RetroARCH commit 8fd905f) to reach the JS side.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ libretro.c | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+diff --git a/libretro.c b/libretro.c
+index 2236cef..4177a3d 100644
+--- a/libretro.c
++++ b/libretro.c
+@@ -1351,6 +1351,38 @@ bool retro_load_game(const struct retro_game_info *info)
+       environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+    }
+ 
++   /* MUSEUM FIX (2026-09-15): expose WorkRAM for RetroAchievements.
++    * Unified WorkRAM[2MB] = Low 1MB (bus 0x00200000) + High 1MB (bus
++    * 0x06000000), mirroring yabause's LowWram/HighWram split and rcheevos'
++    * Saturn region table (Work RAM Low/High). Two 1MB descriptors (not one
++    * 2MB) so the museum bridge's 1MB descriptor filter passes them through.
++    * Static storage: RetroArch copies on SET_MEMORY_MAPS, but static is safe
++    * either way. */
++   {
++      static struct retro_memory_descriptor descs[2];
++      static struct retro_memory_map mmaps;
++      bool cheevos_supported = true;
++      memset(descs, 0, sizeof(descs));
++      descs[0].ptr = WorkRAM;
++      descs[0].offset = 0;
++      descs[0].start = 0x00200000;
++      descs[0].select = 0;
++      descs[0].disconnect = 0;
++      descs[0].len = 0x100000;
++      descs[0].flags = RETRO_MEMDESC_SYSTEM_RAM;
++      descs[1].ptr = WorkRAM + 0x100000;
++      descs[1].offset = 0;
++      descs[1].start = 0x06000000;
++      descs[1].select = 0;
++      descs[1].disconnect = 0;
++      descs[1].len = 0x100000;
++      descs[1].flags = RETRO_MEMDESC_SYSTEM_RAM;
++      mmaps.descriptors = descs;
++      mmaps.num_descriptors = 2;
++      environ_cb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &mmaps);
++      environ_cb(RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS, &cheevos_supported);
++   }
++
+    return true;
+ }
+ 
+-- 
+2.43.0
+

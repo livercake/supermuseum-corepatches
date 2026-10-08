@@ -1,0 +1,266 @@
+From 10ee8eaaffcd522e29b75d61fbc2305391b2b3f9 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:57:29 -0300
+Subject: [PATCH 4/5] MUSEUM FIX (2026-08-10): in-memory loopback for m2comm
+ (Model 2 networking)
+
+Model 2 games (daytona) use the m2comm board, whose M2COMM_SIMULATION
+establishes the link via real sockets (osd_file::open("socket.localhost:port")).
+Under Emscripten those sockets cannot be created, so the game hung forever
+on "network checking" / "this is master controller".
+
+Two source patches fix it:
+
+1. In-memory loopback pipe (m2comm_pipe in m2comm.h) -- an osd_file subclass
+   with a shared byte buffer. In native MAME a lone cabinet self-connects
+   (tx connects to its own listening rx), so the master's VSYNC frames loop
+   back and toggle m_zfg, the FG-register frame-sync bit the game polls via
+   fg_r/read_fg. When socket creation fails in comm_tick, both m_line_rx and
+   m_line_tx are replaced with a pipe pair sharing one buffer. Empty
+   loopback reads deliberately do NOT mark the link lost (only real sockets
+   report connection loss; the "rx connection lost" branch is gated on
+   !m_loopback_buf).
+
+2. Always send VSYNC as master when looping back -- the established path's
+   send block is "if (isMaster || m_loopback_buf)", so frame sync flows even
+   if the game keeps the board as slave.
+
+MUST be re-applied on any future mame0.243 rebuild -- both are source edits.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/mame/machine/m2comm.cpp | 105 ++++++++++++++++++++++--------------
+ src/mame/machine/m2comm.h   |  46 ++++++++++++++++
+ 2 files changed, 112 insertions(+), 39 deletions(-)
+
+diff --git a/src/mame/machine/m2comm.cpp b/src/mame/machine/m2comm.cpp
+index dd25325f6f..8a6e96a26c 100644
+--- a/src/mame/machine/m2comm.cpp
++++ b/src/mame/machine/m2comm.cpp
+@@ -286,13 +286,12 @@ void m2comm_device::cn_w(uint8_t data)
+ 	else
+ 	{
+ 		// init command
+-		osd_printf_verbose("M2COMM: board enabled\n");
++		osd_printf_warning("M2COMM: board enabled\n");
+ 		m_linkenable = 0x01;
+ 		m_linkid = 0x00;
+ 		m_linkalive = 0x00;
+ 		m_linkcount = 0x00;
+ 		m_linktimer = 0x00e8; // 58 fps * 4s
+-
+ 		// zero memory
+ 		for (int i = 0; i < 0x4000; i++)
+ 		{
+@@ -385,6 +384,19 @@ void m2comm_device::comm_tick()
+ 				osd_file::open(m_remotehost, 0, m_line_tx, filesize);
+ 			}
+ 
++			// Emscripten fallback: real sockets can't be created here, so the
++			// socket handshake would never complete and the game would hang on
++			// "network checking".  In native MAME a lone cabinet self-connects
++			// (tx connects to its own listening rx); substitute a pipe pair
++			// sharing one buffer so both ends loop back to each other.
++			if ((!m_line_rx || !m_line_tx) && !m_loopback_buf)
++			{
++				osd_printf_warning("M2COMM: sockets unavailable, using in-memory loopback\n");
++				m_loopback_buf = std::make_shared<std::vector<uint8_t>>();
++				m_line_rx = std::make_unique<m2comm_pipe>(m_loopback_buf);
++				m_line_tx = std::make_unique<m2comm_pipe>(m_loopback_buf);
++			}
++
+ 			// if both sockets are there check ring
+ 			if (m_line_rx && m_line_tx)
+ 			{
+@@ -443,9 +455,9 @@ void m2comm_device::comm_tick()
+ 							send_frame(dataSize);
+ 						}
+ 
+-						// consider it done
+-						osd_printf_verbose("M2COMM: link established - id %02x of %02x\n", m_linkid, m_linkcount);
+-						m_linkalive = 0x01;
++				// consider it done
++				osd_printf_warning("M2COMM: link established - id %02x of %02x\n", m_linkid, m_linkcount);
++				m_linkalive = 0x01;
+ 
+ 						// write to shared mem
+ 						m_shared[0] = 0x01;
+@@ -458,42 +470,51 @@ void m2comm_device::comm_tick()
+ 					else
+ 						recv = 0;
+ 				}
++			}
+ 
+-				// if we are master and link is not yet established
+-				if (isMaster && (m_linkalive == 0x00))
++			// Lone-cabinet fallback: the socket-based multi-cabinet
++			// handshake can never complete under Emscripten (osd_file
++			// can't create sockets), so the network check would hang
++			// forever. After a short delay, claim the link as a lone
++			// cabinet (id 1 of 1) regardless of master/slave so the
++			// game proceeds past "network checking".
++			if (m_linkalive == 0x00)
++			{
++				// send first packet
++				if (m_linktimer == 0x01)
+ 				{
+-					// send first packet
+-					if (m_linktimer == 0x01)
+-					{
+-						m_buffer0[0] = 0xff;
+-						m_buffer0[1] = 0x01;
+-						m_buffer0[2] = 0x00;
+-						send_frame(dataSize);
+-					}
+-
+-					// send second packet
+-					else if (m_linktimer == 0x00)
+-					{
+-						m_buffer0[0] = 0xfe;
+-						m_buffer0[1] = m_linkcount;
+-						m_buffer0[2] = m_linkcount;
+-						send_frame(dataSize);
+-
+-						// consider it done
+-						osd_printf_verbose("M2COMM: link established - id %02x of %02x\n", m_linkid, m_linkcount);
+-						m_linkalive = 0x01;
++					m_buffer0[0] = 0xff;
++					m_buffer0[1] = 0x01;
++					m_buffer0[2] = 0x00;
++					send_frame(dataSize);
++				}
+ 
+-						// write to shared mem
+-						m_shared[0] = 0x01;
+-						m_shared[2] = m_linkid;
+-						m_shared[3] = m_linkcount;
+-					}
++				// send second packet
++				else if (m_linktimer == 0x00)
++				{
++					m_buffer0[0] = 0xfe;
++					m_buffer0[1] = m_linkcount;
++					m_buffer0[2] = m_linkcount;
++					send_frame(dataSize);
++
++					// lone cabinet - claim id 1 of 1
++					m_linkid = 0x01;
++					m_linkcount = 0x01;
++
++					// consider it done
++					osd_printf_verbose("M2COMM: link established - id %02x of %02x\n", m_linkid, m_linkcount);
++					m_linkalive = 0x01;
++
++					// write to shared mem
++					m_shared[0] = 0x01;
++					m_shared[2] = m_linkid;
++					m_shared[3] = m_linkcount;
++				}
+ 
+-					else if (m_linktimer > 0x01)
+-					{
+-						// decrease delay timer
+-						m_linktimer--;
+-					}
++				else if (m_linktimer > 0x01)
++				{
++					// decrease delay timer
++					m_linktimer--;
+ 				}
+ 			}
+ 		}
+@@ -544,7 +565,10 @@ void m2comm_device::comm_tick()
+ 			// enable wait for vsync
+ 			m_linktimer = m_framesync;
+ 
+-			if (isMaster)
++			// A lone cabinet always sends as master - even if the game
++			// keeps the board as slave, the loopback must supply VSYNC
++			// frames or the game's frame sync never completes.
++			if (isMaster || m_loopback_buf)
+ 			{
+ 				// update "ring buffer" if link established
+ 				send_data(m_linkid, frameStart, frameSize, dataSize);
+@@ -662,7 +686,10 @@ int m2comm_device::read_frame(int dataSize)
+ 	}
+ 	else if (!filerr && recv == 0)
+ 	{
+-		if (m_linkalive == 0x01)
++		// An empty read on the loopback pipe is not a lost connection -
++		// the sender simply hasn't written yet this frame.  Only real
++		// sockets report connection loss.
++		if ((m_linkalive == 0x01) && !m_loopback_buf)
+ 		{
+ 			osd_printf_verbose("M2COMM: rx connection lost\n");
+ 			m_linkalive = 0x02;
+diff --git a/src/mame/machine/m2comm.h b/src/mame/machine/m2comm.h
+index 83821ba961..99b64d0ff2 100644
+--- a/src/mame/machine/m2comm.h
++++ b/src/mame/machine/m2comm.h
+@@ -9,10 +9,53 @@
+ 
+ #include "osdfile.h"
+ 
++#include <algorithm>
++#include <vector>
++
+ //**************************************************************************
+ //  TYPE DEFINITIONS
+ //**************************************************************************
+ 
++// In-memory loopback pipe.  Under Emscripten osd_file cannot create real
++// sockets, so the m2comm socket-based multi-cabinet handshake can never
++// complete and the game's network check hangs.  In native MAME a single
++// cabinet self-connects (tx connects to its own listening rx), so we
++// substitute a pipe pair sharing one buffer: data written via tx is
++// readable via rx, exactly like a loopback connection.
++class m2comm_pipe : public osd_file
++{
++public:
++	explicit m2comm_pipe(std::shared_ptr<std::vector<uint8_t>> buf) : m_buf(std::move(buf)) {}
++
++	// osd_file overrides
++	virtual std::error_condition read(void *buffer, std::uint64_t offset, std::uint32_t length, std::uint32_t &actual) noexcept override
++	{
++		actual = 0;
++		if (m_buf->empty())
++			return std::error_condition();
++
++		std::uint32_t n = std::min<std::uint32_t>(length, (std::uint32_t)m_buf->size());
++		memcpy(buffer, m_buf->data(), n);
++		m_buf->erase(m_buf->begin(), m_buf->begin() + n);
++		actual = n;
++		return std::error_condition();
++	}
++
++	virtual std::error_condition write(void const *buffer, std::uint64_t offset, std::uint32_t length, std::uint32_t &actual) noexcept override
++	{
++		uint8_t const *p = reinterpret_cast<uint8_t const *>(buffer);
++		m_buf->insert(m_buf->end(), p, p + length);
++		actual = length;
++		return std::error_condition();
++	}
++
++	virtual std::error_condition truncate(std::uint64_t offset) noexcept override { return std::error_condition(); }
++	virtual std::error_condition flush() noexcept override { return std::error_condition(); }
++
++private:
++	std::shared_ptr<std::vector<uint8_t>> m_buf;
++};
++
+ class m2comm_device : public device_t
+ {
+ public:
+@@ -73,6 +116,9 @@ private:
+ 	uint8_t m_linkcount = 0;
+ 	uint8_t m_zfg_delay = 0;
+ 
++	// shared loopback pipe buffer (Emscripten socket fallback)
++	std::shared_ptr<std::vector<uint8_t>> m_loopback_buf;
++
+ 	void comm_tick();
+ 	void read_fg();
+ 	int read_frame(int dataSize);
+-- 
+2.43.0
+

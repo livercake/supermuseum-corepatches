@@ -1,0 +1,22 @@
+--- a/src/osd/retro/retromain.c
++++ b/src/osd/retro/retromain.c
+@@ -1784,6 +1784,19 @@ static void Set_Default_Option(void)
+ 
+    Add_Option(core);
+ 
++   /* MUSEUM FIX: force -nodrc. The SH-2 DRC recompiler
++    * (src/emu/cpu/sh2/sh2.c:186 -- m_isdrc = mconfig.options().drc())
++    * hangs under WebAssembly: ST-V games (Radiant Silvergun, Steep Slope
++    * Sliders, Final Fight Revenge) spin in an infinite loop at a black
++    * screen and kill the browser tab. Espgaluda II uses SH3 (interpreter)
++    * and works regardless.
++    *
++    * MUST be kept on any future mame2015 rebuild or ST-V games regress to
++    * the black-screen hang. The analogous mame0.243 fix lives in
++    * src/devices/cpu/sh/sh2.cpp (force m_isdrc = false) -- a different
++    * tree layout; this vintage keeps the SH core under src/emu/cpu/sh2/. */
++   Add_Option("-nodrc");
++
+    if(throttle_enable)
+       Add_Option("-throttle");
+    else

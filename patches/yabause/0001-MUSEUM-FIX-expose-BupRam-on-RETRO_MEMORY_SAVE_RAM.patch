@@ -1,0 +1,39 @@
+--- a/yabause/src/libretro/libretro.c
++++ b/yabause/src/libretro/libretro.c
+@@ -23,6 +23,10 @@
+ #include "yabause.h"
+ #include "yui.h"
+ #include "cheat.h"
++/* MUSEUM FIX (2026-09-07): for the BupRam extern — internal backup RAM is
++ * exposed on the SAVE_RAM channel so the museum frontend can persist it
++ * (see retro_get_memory_data below). */
++#include "memory.h"
+ 
+ #include "cs0.h"
+ #include "cs2.h"
+@@ -1173,13 +1177,25 @@ unsigned retro_api_version(void)
+     return RETRO_API_VERSION;
+ }
+ 
++/* MUSEUM FIX (2026-09-07): expose internal backup RAM (BupRam, 64KB) on the
++ * SAVE_RAM channel so the museum frontend can poll/restore/flush it through
++ * the standard .srm pipeline. Safe to expose alongside the core's own file IO:
++ * T1 byte access is flat (mem[addr]) so the raw pointer round-trips exactly,
++ * and T123Save (YabFlushBackups/YabauseDeInit) writes byte-identical content,
++ * so frontend ownership cannot diverge from the core's bup_path file.
++ * Returns NULL before YabauseInit — the frontend queries after
++ * retro_load_game, which is fine. */
+ void *retro_get_memory_data(unsigned id)
+ {
++   if ((id & RETRO_MEMORY_MASK) == RETRO_MEMORY_SAVE_RAM)
++      return BupRam;
+    return NULL;
+ }
+ 
+ size_t retro_get_memory_size(unsigned id)
+ {
++   if ((id & RETRO_MEMORY_MASK) == RETRO_MEMORY_SAVE_RAM)
++      return 0x10000;
+    return 0;
+ }
+ 

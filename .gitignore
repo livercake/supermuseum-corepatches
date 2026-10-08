@@ -1,0 +1,8 @@
+# Nothing generated lives here. This repo is source-only by design:
+# GPL requires the Corresponding Source be available, and the artifacts
+# that are NOT source (packed .data cores, build logs) are intentionally
+# absent. See README.md.
+*.data
+*.bc
+*.d
+*.o

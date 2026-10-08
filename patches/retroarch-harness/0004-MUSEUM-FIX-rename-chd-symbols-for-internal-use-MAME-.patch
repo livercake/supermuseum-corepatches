@@ -1,0 +1,36 @@
+From 9aa90b61434dde9cb9382c8e7c5a923f1f4c91f2 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:51:06 -0300
+Subject: [PATCH 4/6] MUSEUM FIX: rename chd symbols for internal use (MAME
+ builds)
+
+Prefixes chd_open_core_file, chd_read_header and crc16 with
+retroarch_internal_ so MAME's statically-linked libchdr objects cannot
+collide with the frontend's own copies at link time.
+
+Duplicate symbols across the harness and a bundled core archive resolve
+first-wins on object files, which silently swapped one implementation for
+another depending on link order. The rename makes both sides coexist.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ Makefile.common | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Makefile.common b/Makefile.common
+index 8c3b9e01a0..34a62e4ecf 100644
+--- a/Makefile.common
++++ b/Makefile.common
+@@ -2083,6 +2083,9 @@ ifeq ($(HAVE_ZLIB_COMMON), 1)
+          DEFINES += -Dchd_open_file=retroarch_internal_chd_open_file
+          DEFINES += -Dchd_precache=retroarch_internal_chd_precache
+          DEFINES += -Dchd_open=retroarch_internal_chd_open
++         DEFINES += -Dchd_open_core_file=retroarch_internal_chd_open_core_file
++         DEFINES += -Dchd_read_header=retroarch_internal_chd_read_header
++         DEFINES += -Dcrc16=retroarch_internal_crc16
+          DEFINES += -Dchd_close=retroarch_internal_chd_close
+          DEFINES += -Dchd_core_file=retroarch_internal_chd_core_file
+          DEFINES += -Dchd_error_string=retroarch_internal_chd_error_string
+-- 
+2.43.0
+

@@ -1,0 +1,85 @@
+From 7a0d8b8a0a236302e03e30198ebfbed1c3862a82 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:57:29 -0300
+Subject: [PATCH 3/5] MUSEUM FIX (2026-08-10 + 2026-08-13): ST-V reinit
+ suppression + post-state video
+
+1. 2026-08-10 -- suppress RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO on
+   resolution change. ST-V games crashed at the 352x224 -> 704x448 switch
+   with "Aborted(segmentation fault)" plus GL_INVALID_VALUE
+   glTexSubImage2DRobustANGLE teardown fallout. Root cause was NOT the VDP
+   core: when the game writes the VDP2 TVMD register,
+   stv_vdp2_dynamic_res_change() calls m_screen->configure(), the libretro
+   port sets NEWGAME_FROM_OSD=1, and the next retro_run() pushes
+   SET_SYSTEM_AV_INFO. RetroArch responds by tearing down and re-initializing
+   the video+audio drivers (command_event_reinit), and on Emscripten/WebGL
+   that teardown corrupts the heap (audio_driver_deinit -> memalign_free).
+
+   The core still renders the new resolution -- fb_width/fb_height update
+   and video_cb passes the new dimensions -- only the driver teardown is
+   skipped. Verified: game boots, switches resolution, no crash.
+
+2. 2026-08-13 -- video frozen after loading a save state. The machine
+   advanced but the screen stopped presenting frames. retro_unserialize
+   now calls machine->video().set_output_changed() and
+   frame_update(true) after a successful read_buffer, forcing the video
+   manager to re-present a fresh frame. Confirmed working on Daytona and
+   Cruisin USA.
+
+MUST be re-applied on any future mame0.243 rebuild.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../libretro/libretro-internal/libretro.cpp   | 29 +++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/src/osd/libretro/libretro-internal/libretro.cpp b/src/osd/libretro/libretro-internal/libretro.cpp
+index a48e85238b..acde8d1609 100755
+--- a/src/osd/libretro/libretro-internal/libretro.cpp
++++ b/src/osd/libretro/libretro-internal/libretro.cpp
+@@ -689,7 +689,17 @@ void retro_run (void)
+ 
+       retro_get_system_av_info(&ninfo);
+ 
+-      environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &ninfo);
++      /* MUSEUM FIX (2026-08-10): do not push SET_SYSTEM_AV_INFO on resolution
++         change. The RetroArch reinit it triggers (video+audio driver teardown)
++         aborts with "segmentation fault" in audio_driver_deinit -> memalign_free
++         on Emscripten/WebGL, crashing ST-V games at the 352x224 -> 704x448
++         switch (first textured frame). mame2015 hits the same reinit but the
++         corruption only manifests for mame0.243's ST-V. Suppressing the reinit
++         lets the core render the new resolution (video_cb passes fb_width/fb_height)
++         without the driver teardown. Verified: Radiant Silvergun, Steep Slope
++         Sliders, Final Fight Revenge, Cotton 2, Cotton Boomerang all boot past
++         the first textured frame. */
++      //environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &ninfo);
+ 
+       if (log_cb)
+          log_cb(RETRO_LOG_INFO, "ChangeAV: w:%d h:%d ra:%f.\n",
+@@ -783,7 +793,22 @@ bool retro_unserialize(const void *data, size_t size)
+ {
+ 	if ( mame_machine_manager::instance() != NULL && mame_machine_manager::instance()->machine() != NULL &&
+ 			ram_state::get_size(mame_machine_manager::instance()->machine()->save()) > 0)
+-		return (mame_machine_manager::instance()->machine()->save().read_buffer((u8*)data, size) == STATERR_NONE);
++	{
++		/* MUSEUM FIX (2026-08-13): loading a save state on mame0.243 leaves the
++		   video frozen — audio keeps playing (the machine advances) but the screen
++		   stops presenting frames. The state restore itself succeeds; the render
++		   pipeline just needs to be re-engaged. Force the video manager to run a
++		   full frame update (from_debugger=true => unconditional present) and mark
++		   the output changed so the next retro_run re-renders fresh content. */
++		if (mame_machine_manager::instance()->machine()->save().read_buffer((u8*)data, size) == STATERR_NONE)
++		{
++			running_machine *machine = mame_machine_manager::instance()->machine();
++			machine->video().set_output_changed();
++			machine->video().frame_update(true);
++			return true;
++		}
++		return false;
++	}
+ 	return false;
+ }
+ 
+-- 
+2.43.0
+

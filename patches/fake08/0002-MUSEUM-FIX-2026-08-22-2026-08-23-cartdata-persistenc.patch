@@ -1,0 +1,275 @@
+From 281fe572e1a8366cd127d9046477deae0b1f64e6 Mon Sep 17 00:00:00 2001
+From: Felipe Parada <fparada@meatcode.cl>
+Date: Wed, 7 Oct 2026 21:56:58 -0300
+Subject: [PATCH 2/3] MUSEUM FIX (2026-08-22 + 2026-08-23): cartdata
+ persistence + multicart userData
+
+1. Persistent cart-data region as SRAM (2026-08-22). Skip the per-key cdata
+   file wipe/read/write so the SAVE_RAM mapping is authoritative. Without
+   this, cartdata() zeroes 0x5e00 on boot and shadows it with text files,
+   destroying restored saves.
+
+2. Preserve userData across resets (2026-08-23, multicart support).
+   PicoRam::Reset() now leaves 0x8000-0xffff untouched instead of zeroing
+   it, and the struct gained a constructor that zero-fills once for
+   deterministic first boot. Real PICO-8 preserves this region across
+   load(), which multicart games exploit as a handoff channel: POOM's
+   bootstrap copies its sprite/map payload to 0x8000 via
+   memcpy(0x8000,0x0,0x4300) (companion poom_1 adds its own at 0xc300 after
+   poke(0x5f36,0x10)), then chains load("#poom_1") -> load("#poom_e1").
+   fake-08's load("#name") resolution already works: strips '#', tries
+   <dir>/<name>.p8 then .p8.png. Companion carts are pre-placed into the
+   WASM FS root via EJS_externalFiles from the PICO8_MULTICART_FILES
+   registry in config.js (R2 keys mirror the FS paths).
+   Native-verified: chain resolves end-to-end, handoff bytes survive.
+
+Re-apply both on any core rebuild.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ source/PicoRam.h |   9 +++-
+ source/vm.cpp    | 115 +++++++++++++++++++++++++++++++++++++++++++----
+ source/vm.h      |   6 +++
+ 3 files changed, 120 insertions(+), 10 deletions(-)
+
+diff --git a/source/PicoRam.h b/source/PicoRam.h
+index d651d44..c2f9f27 100644
+--- a/source/PicoRam.h
++++ b/source/PicoRam.h
+@@ -278,11 +278,18 @@ struct hwState_t {
+ 
+ struct PicoRam
+ {
++    // MUSEUM FIX (2026-08-23): zero-initialize so first Reset() has deterministic state
++    PicoRam() {
++        memset(data, 0, sizeof(data));
++    }
++
+     void Reset() {
+         memset(data, 0, 0x4300);
+         //leave general use memory
+         memset(data + 0x5f00, 0, 0x8000 - 0x5f00);
+-        //colorBitmask starts at 255
++        // MUSEUM FIX (2026-08-23): preserve userData (0x8000-0xffff) across resets.
++        // Multicart handshakes (e.g. POOM) stash payload there via memcpy before
++        // load() and expect it to survive the incoming cart's memory reset.
+         hwState.colorBitmask = 0xff;
+         hwState.spriteSheetMemMapping = 0x00;
+         hwState.screenDataMemMapping = 0x60;
+diff --git a/source/vm.cpp b/source/vm.cpp
+index 63a6a63..0c92b87 100644
+--- a/source/vm.cpp
++++ b/source/vm.cpp
+@@ -138,6 +138,7 @@ bool _initializeLuaState(lua_State* luaState) {
+     lua_register(luaState, "__cartdata", cartdata);
+     lua_register(luaState, "dget", dget);
+     lua_register(luaState, "dset", dset);
++    lua_register(luaState, "pmem", pmem);  // MUSEUM FIX (2026-08-22): legacy persistent memory API
+ 
+     //
+     lua_register(luaState, "printh", printh);
+@@ -167,6 +168,18 @@ bool _initializeLuaState(lua_State* luaState) {
+         return false;
+     }
+ 
++    // MUSEUM FIX (2026-08-22): build the eris permanents table mapping every
++    // global function to its name (both directions), so light C functions
++    // (host APIs) survive save-state persistence by reference instead of
++    // erroring with ERIS_ERR_CFUNC. Also lift eris's recursion cap - the
++    // sandbox graph is deep.
++    luaL_dostring(luaState,
++        "__z8_perms = {}\n"
++        "for k,v in pairs(_G) do\n"
++        "  if type(v)=='function' then __z8_perms[v]=k __z8_perms[k]=v end\n"
++        "end\n"
++        "if eris and eris.settings then pcall(eris.settings,'maxrec',1000000) end\n");
++
+     // Push the eris.init_persist_all function on the top of the lua stack (or nil if it doesn't exist)
+     // we call this function to establish the default global state of things not to save in the save state
+     // needs to be called after globals are loaded but before the cart is run, or _init is called
+@@ -760,9 +773,11 @@ void Vm::CloseCart() {
+     // }
+ 
+     Logger_Write("writing cart data\n");
++#ifndef PERSIST_CARTDATA_VIA_SRAM
+     if (_currentCartdataKey.length() > 0) {
+         _host->saveCartData(_currentCartdataKey, getSerializedCartData());
+     }
++#endif
+ 
+     Logger_Write("resetting state\n");
+     _targetFps = 60;
+@@ -801,6 +816,19 @@ std::string Vm::CurrentCartFilename(){
+     return "";
+ }
+ 
++// MUSEUM FIX (2026-08-22): surface the last cart boot error for frontend
++// diagnostics. Prefers C++-side errors; falls back to the __z8_last_error
++// global that __z8_tick sets when a resumed cart coroutine dies.
++std::string Vm::GetCartLoadError(){
++    if (!_cartLoadError.empty()) {
++        return _cartLoadError;
++    }
++    lua_getglobal(_luaState, "__z8_last_error");
++    const char* s = lua_tostring(_luaState, -1);
++    lua_pop(_luaState, 1);
++    return s ? std::string(s) : std::string();
++}
++
+ int Vm::GetFrameCount() {
+     return _picoFrameCount;
+ }
+@@ -1054,14 +1082,23 @@ bool Vm::vm_cartdata(string key) {
+     }
+ 
+     // Only clear memory if we're switching to a different key
++#ifdef PERSIST_CARTDATA_VIA_SRAM
++    // MUSEUM FIX (2026-08-22): persistent cart RAM lives in RETRO_MEMORY_SAVE_RAM
++    // (retro_get_memory_data exposes 0x5e00-0x5eff). Never wipe it or shadow it
++    // with per-key cdata files - the frontend owns this region as .srm.
++#else
+     if (_currentCartdataKey != key) {
+         // Clear the cart data memory (0x5e00-0x5eff)
+         memset(&_memory->data[0x5e00], 0, 0x100);
+     }
++#endif
+ 
+     // Set this as the current active key
+     _currentCartdataKey = key;
+ 
++#ifdef PERSIST_CARTDATA_VIA_SRAM
++    return true;
++#else
+     // Try to load data from file for this key
+     auto cartDataStr = _host->getCartDataFileContents(_currentCartdataKey);
+ 
+@@ -1072,6 +1109,7 @@ bool Vm::vm_cartdata(string key) {
+     } else {
+         return false;
+     }
++#endif
+ }
+ 
+ fix32 Vm::vm_dget(uint8_t n) {
+@@ -1491,33 +1529,92 @@ std::string Vm::getLuaLine(string filename, int linenumber) {
+ 
+ 
+ size_t Vm::serializeLuaState(char* dest) {
++    // MUSEUM FIX (2026-08-22): upstream called eris.persist_all/restore_all,
++    // which do not exist in the pinned z8lua's eris (it only has
++    // persist/unpersist/settings) - so every save state silently serialized
++    // an EMPTY lua state (luaStateSize=0) and loading one restored PicoRam
++    // under a stale coroutine: "success" toast, nothing actually happens.
++    // Real implementation: persist a root table {l = game coroutine,
++    // s = cart sandbox} through eris.persist with a permanents table
++    // (__z8_perms, built at VM init) mapping every global C function to its
++    // name, so light C functions survive by reference.
+     lua_getglobal(_luaState, "eris");
+-	lua_getfield(_luaState, -1, "persist_all");
++	lua_getfield(_luaState, -1, "persist");
++	if (lua_isnil(_luaState, -1)) {
++		lua_pop(_luaState, 2);
++		_lastErisError = "eris.persist missing";
++		return 0;
++	}
+ 
+-	if (lua_pcall(_luaState, 0, 1, 0) != 0) {
+-		std::string e = lua_tostring(_luaState, -1);
+-		lua_pop(_luaState, 1);
++	// perms table + root table {l=loop, s=sandbox}
++	lua_getglobal(_luaState, "__z8_perms");
++	if (lua_isnil(_luaState, -1)) {
++		lua_pop(_luaState, 3);
++		_lastErisError = "__z8_perms missing";
++		return 0;
++	}
++	lua_newtable(_luaState);                                  /* t */
++	lua_getglobal(_luaState, "__z8_loop");
++	lua_setfield(_luaState, -2, "l");                         /* t.l = loop */
++	lua_getglobal(_luaState, "__cart_sandbox");
++	lua_setfield(_luaState, -2, "s");                         /* t.s = sandbox */
++
++	if (lua_pcall(_luaState, 2, 1, 0) != 0) {
++		const char* e = lua_tostring(_luaState, -1);
++		Logger_Write("eris persist error: %s\n", e);
++		_lastErisError = std::string("persist: ") + (e ? e : "?");
++		lua_pop(_luaState, 2);
+ 		return 0;
+ 	}
+ 
+ 	size_t len;
+ 	const char* result = lua_tolstring(_luaState, -1, &len);
++	if (!result || len > 1024 * 1024) {   // keep in sync with LUASTATEBUFFSIZE (libretro.cpp)
++		lua_pop(_luaState, 2);
++		_lastErisError = "persist too large";
++		return 0;
++	}
+     memcpy(dest, result, len);
+ 	lua_pop(_luaState, 2);
++	_lastErisError.clear();
+ 
+     return len;
+ }
+ 
+ void Vm::deserializeLuaState(const char* src, size_t len) {
+     lua_getglobal(_luaState, "eris");
+-	lua_getfield(_luaState, -1, "restore_all");
++	lua_getfield(_luaState, -1, "unpersist");
++	if (lua_isnil(_luaState, -1)) {
++		lua_pop(_luaState, 2);
++		_lastErisError = "eris.unpersist missing";
++		return;
++	}
++	lua_getglobal(_luaState, "__z8_perms");
+ 	lua_pushlstring(_luaState, src, len);
+ 
+-	if (lua_pcall(_luaState, 1, 0, 0) != 0) {
+-		std::string e = lua_tostring(_luaState, -1);
+-		lua_pop(_luaState, 1);
++	if (lua_pcall(_luaState, 2, 1, 0) != 0) {
++		const char* e = lua_tostring(_luaState, -1);
++		Logger_Write("eris unpersist error: %s\n", e);
++		_lastErisError = std::string("unpersist: ") + (e ? e : "?");
++		lua_pop(_luaState, 2);
+ 		return;
+ 	}
+-	lua_pop(_luaState, 1);
++
++	/* stack: [t] with t.l = restored coroutine, t.s = restored sandbox */
++	lua_getfield(_luaState, -1, "l");
++	lua_setglobal(_luaState, "__z8_loop");
++
++	lua_getfield(_luaState, -1, "s");
++	if (!lua_isnil(_luaState, -1)) {
++		// Re-point both the global and the registry copy of the sandbox at
++		// the restored table so the C-side fallback stays consistent.
++		lua_pushvalue(_luaState, -1);
++		lua_setglobal(_luaState, "__cart_sandbox");
++		lua_pushstring(_luaState, "__PICO8_SANDBOX");
++		lua_pushvalue(_luaState, -2);
++		lua_rawset(_luaState, LUA_REGISTRYINDEX);
++	}
++	lua_pop(_luaState, 1);   /* t */
++	_lastErisError.clear();
+ }
+ 
+diff --git a/source/vm.h b/source/vm.h
+index 7206d7f..3d8753f 100644
+--- a/source/vm.h
++++ b/source/vm.h
+@@ -108,6 +108,12 @@ class Vm {
+     PicoRam* getPicoRam();
+ 
+     string CurrentCartFilename();
++    string GetCartLoadError();
++    string _lastErisError;      // MUSEUM FIX: last eris persist/unpersist error (diagnostics)
++    int diag_dset_count = 0;    // MUSEUM FIX: telemetry - dset() calls since cart boot
++    int diag_pmem_count = 0;    // MUSEUM FIX: telemetry - pmem writes since cart boot
++    int diag_lastDsetAddr = -1; // MUSEUM FIX: telemetry - last dset slot
++    float diag_lastDsetVal = 0; // MUSEUM FIX: telemetry - last dset value
+ 
+     void togglePauseMenu();
+     bool IsPaused();
+-- 
+2.43.0
+
