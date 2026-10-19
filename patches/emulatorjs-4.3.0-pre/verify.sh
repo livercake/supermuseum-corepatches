@@ -2,7 +2,8 @@
 # Verify the EmulatorJS Corresponding Source round-trip.
 #
 # Proves: upstream 4.3.0-pre bytes  ->  apply src.diff  ->  byte-for-byte
-# reproduces the vendored emulator.js that SuperMuseum ships.
+# reproduces the vendored frontend files that SuperMuseum ships
+# (src/emulator.js + src/gamepad.js).
 #
 # This is the GPL-3.0 §6 "produce an equivalent binary" check for the
 # frontend. Run it after any EmulatorJS update, before re-applying patches.
@@ -17,50 +18,77 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # .../arties/licenses/patches/emulatorjs-4.3.0-pre  ->  repo root is 4 levels up
 REPO="$(cd "$HERE/../../../.." && pwd)"
 
-UPSTREAM_URL="https://cdn.emulatorjs.org/4.3.0-pre/data/src/emulator.js"
-UPSTREAM_SHA="182aa14dd0f874b308220fbaa8aad66eff4a83fe4dae4163543adebfa21f9ed9"
-VENDORED_SHA="afa64e8ffb6f88d29a49fb4ef16bdf3380f45f3761613aabc2adac67d876af0d"
+UPSTREAM_EMULATOR_URL="https://cdn.emulatorjs.org/4.3.0-pre/data/src/emulator.js"
+UPSTREAM_EMULATOR_SHA="182aa14dd0f874b308220fbaa8aad66eff4a83fe4dae4163543adebfa21f9ed9"
+UPSTREAM_GAMEPAD_URL="https://cdn.emulatorjs.org/4.3.0-pre/data/src/gamepad.js"
+UPSTREAM_GAMEPAD_SHA="85fd777a46e9aa10a09a24f8c6455dc5ca0c5e2f1b2fbf66cf87e297b101b1ae"
 
-VENDORED="$REPO/public/emulatorjs/data/src/emulator.js"
+VENDORED_EMULATOR="$REPO/public/emulatorjs/data/src/emulator.js"
+VENDORED_GAMEPAD="$REPO/public/emulatorjs/data/src/gamepad.js"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-echo "==> 1/4  fetching upstream 4.3.0-pre baseline"
-curl -fsSL "$UPSTREAM_URL" -o "$WORK/upstream.js" \
-  || fail "could not fetch $UPSTREAM_URL (offline? CDN moved?)"
+echo "==> 1/5  fetching upstream 4.3.0-pre baselines"
+curl -fsSL "$UPSTREAM_EMULATOR_URL" -o "$WORK/upstream-emulator.js" \
+  || fail "could not fetch $UPSTREAM_EMULATOR_URL (offline? CDN moved?)"
+curl -fsSL "$UPSTREAM_GAMEPAD_URL" -o "$WORK/upstream-gamepad.js" \
+  || fail "could not fetch $UPSTREAM_GAMEPAD_URL (offline? CDN moved?)"
 
-got="$(sha256sum "$WORK/upstream.js" | cut -d' ' -f1)"
-[ "$got" = "$UPSTREAM_SHA" ] \
-  || fail "upstream hash changed!
-       expected $UPSTREAM_SHA
+got="$(sha256sum "$WORK/upstream-emulator.js" | cut -d' ' -f1)"
+[ "$got" = "$UPSTREAM_EMULATOR_SHA" ] \
+  || fail "upstream emulator.js hash changed!
+       expected $UPSTREAM_EMULATOR_SHA
        got      $got
      The 4.3.0-pre CDN directory appears to have been re-published.
      Re-audit before trusting this patch (see BASE.md)."
-echo "    baseline sha256 OK"
+got="$(sha256sum "$WORK/upstream-gamepad.js" | cut -d' ' -f1)"
+[ "$got" = "$UPSTREAM_GAMEPAD_SHA" ] \
+  || fail "upstream gamepad.js hash changed!
+       expected $UPSTREAM_GAMEPAD_SHA
+       got      $got
+     The 4.3.0-pre CDN directory appears to have been re-published.
+     Re-audit before trusting this patch (see BASE.md)."
+echo "    baseline sha256 OK (both files)"
 
-echo "==> 2/4  applying src.diff"
+echo "==> 2/5  applying src.diff"
 mkdir -p "$WORK/src"
-cp "$WORK/upstream.js" "$WORK/src/emulator.js"
+cp "$WORK/upstream-emulator.js" "$WORK/src/emulator.js"
+cp "$WORK/upstream-gamepad.js" "$WORK/src/gamepad.js"
 patch -p1 -d "$WORK" --silent < "$HERE/src.diff" \
   || fail "patch did not apply cleanly — upstream changed under us"
 echo "    applied cleanly, no rejects"
 
-echo "==> 3/4  comparing against vendored file"
+echo "==> 3/5  comparing against vendored files"
 got="$(sha256sum "$WORK/src/emulator.js" | cut -d' ' -f1)"
-want="$(sha256sum "$VENDORED" | cut -d' ' -f1)"
+want="$(sha256sum "$VENDORED_EMULATOR" | cut -d' ' -f1)"
 [ "$got" = "$want" ] \
-  || fail "patched upstream != vendored
+  || fail "patched upstream emulator.js != vendored
        patched:  $got
        vendored: $want
-     The vendored tree has drifted from src.diff. Re-audit Patches A-I
+     The vendored tree has drifted from src.diff. Re-audit Patches A–L
      (AGENTS.md 'EmulatorJS Vendored Patches')."
-echo "    byte-for-byte match with public/emulatorjs/data/src/emulator.js"
+got="$(sha256sum "$WORK/src/gamepad.js" | cut -d' ' -f1)"
+want="$(sha256sum "$VENDORED_GAMEPAD" | cut -d' ' -f1)"
+[ "$got" = "$want" ] \
+  || fail "patched upstream gamepad.js != vendored
+       patched:  $got
+       vendored: $want
+     The vendored tree has drifted from src.diff. Re-audit Patches A–L
+     (AGENTS.md 'EmulatorJS Vendored Patches')."
+echo "    byte-for-byte match with public/emulatorjs/data/src/{emulator,gamepad}.js"
 
-echo "==> 4/4  confirming vendored file still parses as an ES module"
-node --input-type=module --check < "$VENDORED" 2>/dev/null \
+echo "==> 4/5  confirming vendored files still parse as ES modules"
+node --input-type=module --check < "$VENDORED_EMULATOR" 2>/dev/null \
   || fail "vendored emulator.js does not parse"
+node --input-type=module --check < "$VENDORED_GAMEPAD" 2>/dev/null \
+  || fail "vendored gamepad.js does not parse"
+echo "    both parse OK"
+
+echo "==> 5/5  confirming minified bundle still parses as an ES module"
+node --input-type=module --check < "$REPO/public/emulatorjs/data/emulator.min.js" 2>/dev/null \
+  || fail "vendored emulator.min.js does not parse"
 echo "    parses OK"
 
 echo

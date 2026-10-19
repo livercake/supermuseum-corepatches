@@ -7,7 +7,7 @@
 | Project | [EmulatorJS/EmulatorJS](https://github.com/EmulatorJS/EmulatorJS) — "A web-based frontend for RetroArch" |
 | License | **GPL-3.0** |
 | Base version | `4.3.0-pre` |
-| Upstream source | `https://cdn.emulatorjs.org/4.3.0-pre/data/src/emulator.js` |
+| Upstream source | `https://cdn.emulatorjs.org/4.3.0-pre/data/src/{emulator,gamepad}.js` |
 | CDN `Last-Modified` | `Sun, 17 May 2026 16:54:42 GMT` |
 | CDN ETag | `"10708492"` |
 
@@ -24,26 +24,29 @@ are the stable identity; the version label alone is not sufficient.
 | File | SHA-256 |
 |---|---|
 | `4.3.0-pre/data/src/emulator.js` | `182aa14dd0f874b308220fbaa8aad66eff4a83fe4dae4163543adebfa21f9ed9` |
+| `4.3.0-pre/data/src/gamepad.js` | `85fd777a46e9aa10a09a24f8c6455dc5ca0c5e2f1b2fbf66cf87e297b101b1ae` |
 | `4.3.0-pre/data/emulator.min.js` | `b5f88bdfc57c11b76e20e7393c51e2257efde7637e48565be702e0d6590fb5ea` |
 
 ### SuperMuseum vendored (what ships)
 
 | File | SHA-256 |
 |---|---|
-| `public/emulatorjs/data/src/emulator.js` | `afa64e8ffb6f88d29a49fb4ef16bdf3380f45f3761613aabc2adac67d876af0d` |
-| `public/emulatorjs/data/emulator.min.js` | `8980d343fedf95f496f86cb18de334354dc17ff5401e9747e5464428f87d5fbf` |
+| `public/emulatorjs/data/src/emulator.js` | `cf18efeef1ed076178d39541cddf61304b68e249f7cbc86da4a0db7a364dc775` |
+| `public/emulatorjs/data/src/gamepad.js` | `2a60c349f3d7f4f512b7470d3dfe1aab2dc576ebadef3bf83a1c65d4f8553336` |
+| `public/emulatorjs/data/emulator.min.js` | `4a107d621fe853ba97d1ccbd5b624164d4fb4f24ee0248f88eb9962164b571f0` |
 
 ## The patch
 
-`src.diff` — 25 hunks, +287 / −119 lines — is the complete difference between upstream
-`4.3.0-pre` and the vendored `src/emulator.js`. It is the Corresponding Source delta
-required by GPL-3.0 §6 for the frontend as distributed.
+`src.diff` — 34 hunks, +381 / −133 lines — is the complete difference between upstream
+`4.3.0-pre` and the vendored `src/emulator.js` + `src/gamepad.js`. It is the
+Corresponding Source delta required by GPL-3.0 §6 for the frontend as distributed.
 
 ### Provenance audit (2026-10-07)
 
 The vendored tree was diffed against upstream to confirm it is a **clean single-era
 build**, not a franken-build of `4.3.0-pre` + `latest`. Result: **all nine documented
 patches present, no version interleave, no unreferenced additions.**
+(Patches J–L landed after the audit; see the extended table above.)
 
 | Patch | Signature confirmed |
 |---|---|
@@ -56,6 +59,9 @@ patches present, no version interleave, no unreferenced additions.**
 | G — sidecar progress + caching | the `attempt` retry wrapper |
 | H — input-descriptor audit + touch overlays | `Patch H addendum`, `arcade touch overlay` |
 | I — `loadSettings` analog backfill | `PATCH I (2026-09-09)` |
+| J — core lock, no visitor switching | `window.EJS_DEBUG_XX` in `getCore` + Core menu condition |
+| K — arcade stick/trigger rows + backfill extension | `{id:12,label:this.localization("L2")}`, `...this.analogAxes, 12, 13` |
+| L — analog trigger pressure | `analogTriggers`, gamepad `{pressed, value}` + `Math.round(32767*c)` |
 
 ### Applying
 
@@ -66,11 +72,12 @@ patches present, no version interleave, no unreferenced additions.**
 or manually:
 
 ```bash
-curl -sL https://cdn.emulatorjs.org/4.3.0-pre/data/src/emulator.js -o upstream.js
-sha256sum upstream.js   # must equal the baseline hash above
-mkdir -p src && cp upstream.js src/emulator.js
+curl -sL https://cdn.emulatorjs.org/4.3.0-pre/data/src/emulator.js -o upstream-emulator.js
+curl -sL https://cdn.emulatorjs.org/4.3.0-pre/data/src/gamepad.js -o upstream-gamepad.js
+sha256sum upstream-emulator.js upstream-gamepad.js   # must equal the baseline hashes above
+mkdir -p src && cp upstream-emulator.js src/emulator.js && cp upstream-gamepad.js src/gamepad.js
 patch -p1 -d . < src.diff
-sha256sum src/emulator.js  # must equal the vendored hash above
+sha256sum src/emulator.js src/gamepad.js  # must equal the vendored hashes above
 ```
 
 ## Note on `emulator.min.js`
